@@ -6,6 +6,19 @@ echo "MWAA + OpenLineage HA Deployment"
 echo "========================================="
 echo ""
 
+# Check if running in virtual environment
+if [ -z "$VIRTUAL_ENV" ]; then
+    echo "Error: Not running in a virtual environment!"
+    echo ""
+    echo "Please set up and activate a virtual environment first:"
+    echo "  python3 -m venv .venv"
+    echo "  source .venv/bin/activate  # On Windows: .venv\\Scripts\\activate"
+    echo "  pip install -r requirements.txt"
+    echo ""
+    echo "Then run this script again."
+    exit 1
+fi
+
 # Check if AWS CLI is configured
 if ! aws sts get-caller-identity &> /dev/null; then
     echo "Error: AWS CLI is not configured. Please run 'aws configure' first."
@@ -18,11 +31,7 @@ AWS_REGION=$(aws configure get region || echo "us-east-2")
 
 echo "AWS Account: $AWS_ACCOUNT"
 echo "AWS Region: $AWS_REGION"
-echo ""
-
-# Install dependencies
-echo "Installing Python dependencies..."
-pip install -r requirements.txt
+echo "Virtual Environment: $VIRTUAL_ENV"
 echo ""
 
 # Bootstrap CDK (if not already done)

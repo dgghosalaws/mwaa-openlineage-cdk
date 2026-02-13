@@ -28,20 +28,28 @@ This project supports two deployment options. Choose based on your needs:
 **Cost**: ~$363/month  
 **Setup time**: ~35-40 minutes
 
+**Prerequisites**:
+1. AWS CLI configured
+2. AWS CDK installed (`npm install -g aws-cdk`)
+3. Python 3.9+ with pip
+4. Virtual environment activated
+
 ```bash
 # 1. Clone the repository
 git clone https://github.com/dgghosalaws/mwaa-openlineage-cdk.git
 cd mwaa-openlineage-cdk
 
-# 2. Install dependencies
+# 2. Set up virtual environment
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# 3. Install dependencies
 pip install -r requirements.txt
 
-# 3. Bootstrap CDK (first time only)
+# 4. Bootstrap CDK (first time only)
 cdk bootstrap
 
-# 4. Deploy all stacks (uses app.py by default)
+# 5. Deploy all stacks (uses app.py by default)
 cdk deploy --all
 
 # Or deploy individually:
@@ -69,29 +77,35 @@ cdk deploy --all
 **Cost**: ~$473/month  
 **Setup time**: ~20-25 minutes
 
+**Prerequisites**:
+1. AWS CLI configured
+2. AWS CDK installed (`npm install -g aws-cdk`)
+3. Python 3.9+ with pip
+4. Virtual environment activated
+
 ```bash
 # 1. Clone the repository (if not already done)
 git clone https://github.com/dgghosalaws/mwaa-openlineage-cdk.git
 cd mwaa-openlineage-cdk
 
-# 2. Install dependencies (if not already done)
+# 2. Set up virtual environment
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# 3. Install dependencies
 pip install -r requirements.txt
 
-# 3. Bootstrap CDK (first time only, if not already done)
+# 4. Bootstrap CDK (first time only, if not already done)
 cdk bootstrap
 
-# 4. Deploy HA infrastructure (uses app_ha.py)
+# 5. Deploy using the script (recommended)
+./deploy_ha.sh
+
+# OR deploy manually:
 cdk deploy mwaa-openlineage-network-ha mwaa-openlineage-marquez-ha \
   --app "python3 app_ha.py" \
   --require-approval never \
   --region us-east-2
-
-# 5. Optional: Deploy MWAA stack
-# cdk deploy mwaa-openlineage-mwaa-ha \
-#   --app "python3 app_ha.py" \
-#   --region us-east-2
 ```
 
 **What gets deployed**:
