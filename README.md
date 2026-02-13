@@ -563,34 +563,27 @@ If Marquez UI is not accessible:
      --parameters 'commands=["cd /home/ec2-user/marquez && sudo -u ec2-user ./docker/up.sh --tag 0.42.0 --detach"]'
    ```
 
-3. **Add your IP to security group** (if connection times out):
-   ```bash
-   # Get your IP
-   MY_IP=$(curl -s https://checkip.amazonaws.com)
+3. **Access Marquez** (in private subnet):
    
-   # Get Marquez security group ID
-   SG_ID=$(aws ec2 describe-security-groups \
-     --filters "Name=group-name,Values=*Marquez*" \
-     --query 'SecurityGroups[0].GroupId' --output text)
+   Marquez is deployed in a private subnet for security. See [ACCESSING_MARQUEZ.md](ACCESSING_MARQUEZ.md) for detailed access methods including:
+   - SSM Session Manager (recommended - no SSH keys needed)
+   - Port forwarding for UI access
+   - Temporary IP whitelisting for development
    
-   # Add your IP for ports 3000 (UI) and 5000 (API)
-   aws ec2 authorize-security-group-ingress \
-     --group-id $SG_ID \
-     --ip-permissions \
-       IpProtocol=tcp,FromPort=3000,ToPort=3000,IpRanges="[{CidrIp=$MY_IP/32,Description='My IP for Marquez UI'}]" \
-       IpProtocol=tcp,FromPort=5000,ToPort=5000,IpRanges="[{CidrIp=$MY_IP/32,Description='My IP for Marquez API'}]"
-   ```
-
-4. **Verify Marquez is responding**:
+   Quick test via SSM:
    ```bash
-   # Get Marquez public IP
-   MARQUEZ_IP=$(aws cloudformation describe-stacks \
+   # Get instance ID
+   INSTANCE_ID=$(aws cloudformation describe-stacks \
      --stack-name mwaa-openlineage-marquez-dev \
-     --query 'Stacks[0].Outputs[?OutputKey==`MarquezPublicIp`].OutputValue' \
+     --query 'Stacks[0].Outputs[?OutputKey==`MarquezInstanceId`].OutputValue' \
      --output text)
    
-   # Test API
-   curl http://$MARQUEZ_IP:5000/api/v1/namespaces
+   # Test API via SSM
+   aws ssm send-command \
+     --instance-ids "$INSTANCE_ID" \
+     --document-name "AWS-RunShellScript" \
+     --parameters 'commands=["curl -s http://localhost:5000/api/v1/namespaces"]' \
+     --query 'Command.CommandId' --output text
    ```
 
 **Note**: After EC2 instance reboot, Marquez containers may need to be manually restarted. The systemd service is configured to auto-start on boot, but if it fails, use the restart command above.
@@ -656,34 +649,50 @@ cdk destroy mwaa-openlineage-network-ha --app "python3 app_ha.py" --region us-ea
 
 **Note**: S3 buckets will be automatically emptied and deleted. RDS snapshots (HA deployment) are retained by default for 7 days.
 
-## Security Considerations
+## Security Features
 
-### Production Recommendations
+This project implements security best practices out of the box:
 
-1. **Remove Public Access**:
-   - Change Marquez to private subnet
-   - Use VPN or bastion host for access
-   - Set MWAA webserver to PRIVATE_ONLY
+### Built-in Security
 
-2. **Enable Encryption**:
-   - Enable S3 bucket encryption with KMS
-   - Enable MWAA encryption
-   - Use encrypted EBS volumes
+1. **Private Subnet Deployment**:
+   - ✅ Marquez deployed in private subnet (no public IP)
+   - ✅ MWAA in private subnets
+   - ✅ Access via SSM Session Manager (no SSH keys needed)
+   - See [ACCESSING_MARQUEZ.md](ACCESSING_MARQUEZ.md) for access methods
 
-3. **Restrict Security Groups**:
-   - Limit SSH access to specific IPs
-   - Remove public access to Marquez UI
-   - Use VPC endpoints for AWS services
+2. **Encryption Enabled**:
+   - ✅ S3 bucket encryption with KMS (key rotation enabled)
+   - ✅ EBS volumes encrypted
+   - ✅ Data encrypted at rest
 
-4. **Enable Monitoring**:
-   - Set up CloudWatch alarms
+3. **Restricted Access**:
+   - ✅ SSH access disabled by default
+   - ✅ Security groups allow only necessary ports
+   - ✅ Marquez accessible only from within VPC
+   - ✅ IAM roles with least privilege
+
+4. **Monitoring Ready**:
+   - ✅ CloudWatch logging enabled for MWAA
+   - ✅ SSM Session Manager for secure access
+   - ✅ VPC Flow Logs can be enabled
+
+### Additional Production Recommendations
+
+1. **Enhanced Monitoring**:
+   - Set up CloudWatch alarms for critical metrics
    - Enable VPC Flow Logs
    - Enable CloudTrail logging
 
-5. **Secrets Management**:
-   - Rotate Secrets Manager secrets regularly
-   - Use IAM roles instead of access keys
-   - Enable secret rotation
+2. **Access Control**:
+   - Set MWAA webserver to PRIVATE_ONLY for production
+   - Use AWS Client VPN for team access
+   - Implement MFA for AWS console access
+
+3. **Secrets Management**:
+   - Rotate credentials regularly
+   - Use AWS Secrets Manager for sensitive data
+   - Enable secret rotation policies
 
 ## Support
 

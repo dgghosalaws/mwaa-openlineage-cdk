@@ -5,6 +5,7 @@ from aws_cdk import (
     Stack,
     aws_ec2 as ec2,
     aws_iam as iam,
+    aws_kms as kms,
     CfnOutput,
     Duration,
 )
@@ -108,7 +109,7 @@ class MarquezStack(Stack):
             "echo 'Marquez installation complete!'",
         )
 
-        # EC2 Instance for Marquez
+        # EC2 Instance for Marquez (in private subnet)
         marquez_instance = ec2.Instance(
             self,
             "MarquezInstance",
@@ -119,7 +120,7 @@ class MarquezStack(Stack):
             ),
             machine_image=ec2.MachineImage.latest_amazon_linux2023(),
             vpc=vpc,
-            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
+            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
             security_group=marquez_sg,
             role=marquez_role,
             user_data=user_data,
@@ -131,6 +132,7 @@ class MarquezStack(Stack):
                         volume_size=30,
                         volume_type=ec2.EbsDeviceVolumeType.GP3,
                         delete_on_termination=True,
+                        encrypted=True,  # Explicit EBS encryption
                     ),
                 )
             ],
@@ -138,7 +140,7 @@ class MarquezStack(Stack):
 
         # Store URLs for use by other stacks
         self.marquez_api_url = f"http://{marquez_instance.instance_private_dns_name}:5000"
-        self.marquez_ui_url = f"http://{marquez_instance.instance_public_dns_name}:3000"
+        self.marquez_ui_url = f"http://{marquez_instance.instance_private_dns_name}:3000"
 
         # Outputs
         CfnOutput(
@@ -147,6 +149,13 @@ class MarquezStack(Stack):
             value=marquez_instance.instance_id,
             description="Marquez EC2 Instance ID",
             export_name=f"{project_name}-marquez-instance-{environment}",
+        )
+
+        CfnOutput(
+            self,
+            "MarquezPrivateIp",
+            value=marquez_instance.instance_private_ip,
+            description="Marquez Private IP",
         )
 
         CfnOutput(
@@ -161,13 +170,6 @@ class MarquezStack(Stack):
             self,
             "MarquezUiUrl",
             value=self.marquez_ui_url,
-            description="Marquez UI URL (public)",
+            description="Marquez UI URL (private - access via SSM or VPN)",
             export_name=f"{project_name}-marquez-ui-{environment}",
-        )
-
-        CfnOutput(
-            self,
-            "MarquezPublicIp",
-            value=marquez_instance.instance_public_ip,
-            description="Marquez Public IP",
         )

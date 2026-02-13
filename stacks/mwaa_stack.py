@@ -9,6 +9,7 @@ from aws_cdk import (
     aws_s3_deployment as s3deploy,
     aws_iam as iam,
     aws_mwaa as mwaa,
+    aws_kms as kms,
     CfnOutput,
     RemovalPolicy,
 )
@@ -32,13 +33,23 @@ class MwaaStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        # S3 Bucket for MWAA
+        # KMS Key for S3 encryption
+        s3_kms_key = kms.Key(
+            self,
+            "MwaaS3Key",
+            description=f"KMS key for {project_name} MWAA S3 bucket encryption",
+            enable_key_rotation=True,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
+        # S3 Bucket for MWAA with KMS encryption
         mwaa_bucket = s3.Bucket(
             self,
             "MwaaBucket",
             bucket_name=f"{project_name}-mwaa-{environment}-{self.account}",
             versioned=True,
-            encryption=s3.BucketEncryption.S3_MANAGED,
+            encryption=s3.BucketEncryption.KMS,
+            encryption_key=s3_kms_key,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             removal_policy=RemovalPolicy.DESTROY,
             auto_delete_objects=True,
@@ -79,6 +90,9 @@ class MwaaStack(Stack):
 
         # Grant S3 permissions
         mwaa_bucket.grant_read_write(mwaa_role)
+        
+        # Grant KMS permissions for S3 encryption
+        s3_kms_key.grant_encrypt_decrypt(mwaa_role)
 
         # Additional permissions for MWAA
         mwaa_role.add_to_policy(

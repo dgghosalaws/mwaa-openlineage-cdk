@@ -66,12 +66,13 @@ class NetworkStack(Stack):
             description="Allow Marquez UI access from VPC",
         )
 
-        # Allow SSH for management (optional - can be removed for production)
-        self.marquez_sg.add_ingress_rule(
-            peer=ec2.Peer.any_ipv4(),
-            connection=ec2.Port.tcp(22),
-            description="Allow SSH access",
-        )
+        # SSH access removed by default for security
+        # To enable SSH access from your IP, run:
+        # aws ec2 authorize-security-group-ingress \
+        #   --group-id <MARQUEZ-SG-ID> \
+        #   --protocol tcp --port 22 \
+        #   --cidr <YOUR-IP>/32 \
+        #   --description "SSH access from my IP"
 
         # Security Group for MWAA
         self.mwaa_sg = ec2.SecurityGroup(
