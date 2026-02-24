@@ -1,0 +1,15 @@
+# OpenLineage for Airflow 3.0.6
+# Use native Airflow provider (NOT openlineage-airflow which is deprecated for Airflow 3.0+)
+apache-airflow-providers-openlineage>=2.2.0
+
+# Required dependencies
+openapi-python-client
+apache-airflow-providers-amazon>=8.0.0
+apache-airflow-providers-common-sql>=1.10.0
+
+# Additional dependencies
+requests>=2.31.0
+attrs>=22.1.0
+
+# DAG Factory for YAML-based DAG generation (Airflow 3 compatible)
+dag-factory==1.0.1

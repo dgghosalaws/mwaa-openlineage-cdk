@@ -1,0 +1,72 @@
+# CDK
+*.swp
+package-lock.json
+__pycache__
+.pytest_cache
+.venv
+*.egg-info
+.vscode
+
+# CDK asset staging directory
+.cdk.staging
+cdk.out
+
+# Python
+*.pyc
+__pycache__/
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary documentation and status files
+*_STATUS*.md
+*_SUMMARY*.md
+RESUME_WORK.md
+START_HERE.md
+NEXT_STEPS.md
+COMMANDS_TO_RUN.md
+VISUAL_STATUS.md
+QUICK_START_*.md
+HA_SETUP.md
+TESTING_PLAN.md
+
+# Old/backup files
+*_old.py
+*_backup.py
+
+# Temporary scripts
+test_*.sh
+mirror_*.sh
+app_unified.py
+deploy.sh
+deploy.log
