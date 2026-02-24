@@ -233,6 +233,10 @@ class MwaaStack(Stack):
                 # But default_pool slots may be limited - explicitly set to 2000
                 "core.default_pool_task_slot_count": "2000",
                 "core.max_active_tasks_per_dag": "2000",
+                # Scheduler settings for performance testing
+                # Increase task_queued_timeout to prevent premature task failures during high load
+                # Default is 600 seconds (10 minutes), increase to 30 minutes for sustained tests
+                "scheduler.task_queued_timeout": "1800",
                 # OpenLineage configuration using native provider (Airflow 3.0+)
                 # No plugins needed - provider handles everything automatically
                 "openlineage.transport": json.dumps({

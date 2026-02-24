@@ -278,6 +278,11 @@ class MwaaBlueGreenStack(Stack):
                 "core.lazy_load_plugins": "false",
                 "core.load_default_connections": "false",
                 "core.load_examples": "false",
+                # Concurrency settings for performance testing
+                "core.default_pool_task_slot_count": "2000",
+                "core.max_active_tasks_per_dag": "2000",
+                # Scheduler settings for performance testing
+                "scheduler.task_queued_timeout": "1800",
                 "openlineage.transport": json.dumps({
                     "type": "http",
                     "url": marquez_url,
@@ -297,6 +302,11 @@ class MwaaBlueGreenStack(Stack):
                 "core.lazy_load_plugins": "false",
                 "core.load_default_connections": "false",
                 "core.load_examples": "false",
+                # Concurrency settings for performance testing
+                "core.default_pool_task_slot_count": "2000",
+                "core.max_active_tasks_per_dag": "2000",
+                # Scheduler settings for performance testing
+                "scheduler.task_queued_timeout": "1800",
                 "openlineage.transport": json.dumps({
                     "type": "http",
                     "url": marquez_url,
