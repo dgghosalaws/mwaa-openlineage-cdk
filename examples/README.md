@@ -7,13 +7,13 @@ This directory contains advanced deployment examples for MWAA with OpenLineage i
 ### 1. Disaster Recovery (DR)
 **Directory**: `disaster-recovery/`
 
-Deploy MWAA across two AWS regions with manual failover capabilities and metadata backup/restore.
+Deploy MWAA across two AWS regions with manual failover capabilities.
 
 **Features**:
 - Manual failover with DAG control (pause/unpause)
-- Metadata backup/restore (1-5 minutes with history)
 - DynamoDB Global Table for state management
 - Sensor-based region detection (2-3 seconds)
+- Cross-region S3 bucket replication for DAGs and plugins
 - Cost: ~$0.43/month
 
 **Use Case**: Production environments requiring cross-region disaster recovery with controlled failover
