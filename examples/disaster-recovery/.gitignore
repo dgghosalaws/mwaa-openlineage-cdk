@@ -1,0 +1,17 @@
+# Test files
+test_*.sh
+*_test.py
+
+# Temporary files
+*.tmp
+*.log
+
+# IDE files
+.DS_Store
+.vscode/
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo

@@ -13,6 +13,7 @@ This CDK project creates a complete, production-ready MWAA environment with Open
 - ✅ **Automated deployment** with AWS CDK
 - ✅ **Marquez** for lineage visualization
 - ✅ **Four deployment modes**: Standard, Blue-Green MWAA, HA Marquez, Full HA
+- ✅ **Disaster Recovery** with automated failover and fallback
 - ✅ **Production-ready** with security best practices
 - ✅ **Zero-downtime switching** for Blue-Green deployments
 - ✅ **Comprehensive documentation** with troubleshooting guides
@@ -32,6 +33,20 @@ This project supports **four deployment modes**. Choose based on your requiremen
 | **Full HA** | Dual (Blue+Green) | ALB+ASG+RDS | ~$1,000 | Production, mission-critical |
 
 See **[DEPLOYMENT_MODES.md](DEPLOYMENT_MODES.md)** for detailed comparison and switching instructions.
+
+## 📚 Advanced Examples
+
+Looking for advanced deployment patterns? Check out the **[examples/](examples/)** directory:
+
+### Disaster Recovery (DR)
+Deploy MWAA across two AWS regions with automatic DAG control based on active region.
+
+- **Features**: DynamoDB state management, automatic DAG pause/unpause, manual failover scripts
+- **Cost**: ~$716/month (dual-region MWAA + minimal DynamoDB)
+- **Use case**: Production environments requiring cross-region disaster recovery
+- **Note**: Metadata backup/restore not included (Airflow 3.0 limitation - use AWS Backup instead)
+
+See **[examples/disaster-recovery/README.md](examples/disaster-recovery/README.md)** for complete documentation and deployment instructions.
 
 ## 🚀 Quick Start
 
@@ -255,6 +270,63 @@ See **[FULL_HA_GUIDE.md](FULL_HA_GUIDE.md)** for complete HA deployment guide.
 
 **Note**: All deployments can coexist in the same AWS account/region as they use different stack names.
 
+---
+
+## 🔄 Disaster Recovery (Optional)
+
+This project includes comprehensive disaster recovery capabilities with automated failover and fallback between two AWS regions.
+
+### DR Features
+
+- ✅ **Bidirectional Failover**: Automatic failover when primary region fails
+- ✅ **Automated Fallback**: Automatic fallback when primary region recovers
+- ✅ **State Management**: DynamoDB Global Table tracks active region
+- ✅ **Metadata Sync**: Continuous backup with 5-minute RPO
+- ✅ **Health Monitoring**: Continuous health checks of both regions
+- ✅ **Zero Data Loss**: For committed DAG runs
+
+### DR Configuration
+
+Enable DR in `cdk.json`:
+
+```json
+{
+  "context": {
+    "enable_dr": true,
+    "dr_config": {
+      "primary_region": "us-east-1",
+      "secondary_region": "us-west-2",
+      "backup_schedule": "rate(5 minutes)",
+      "health_check_interval": "rate(1 minute)",
+      "health_check_threshold": 3,
+      "fallback_cooldown_minutes": 30,
+      "notification_emails": ["ops-team@example.com"]
+    }
+  }
+}
+```
+
+### Deploy DR Infrastructure
+
+```bash
+# Deploy DR to both regions
+./deploy_dr.sh
+
+# Test failover
+./test_dr_failover.sh
+```
+
+### DR Metrics
+
+- **RPO (Recovery Point Objective)**: < 5 minutes
+- **RTO (Recovery Time Objective)**: < 10 minutes
+- **Failover Time**: 5-8 minutes
+- **Fallback Time**: 5-8 minutes
+
+See **[DR_WITH_FALLBACK.md](DR_WITH_FALLBACK.md)** for complete DR guide including architecture, testing, and troubleshooting.
+
+---
+
 ## 📚 Documentation
 
 ### Getting Started
@@ -269,6 +341,7 @@ See **[FULL_HA_GUIDE.md](FULL_HA_GUIDE.md)** for complete HA deployment guide.
 - **[ACCESSING_MARQUEZ.md](ACCESSING_MARQUEZ.md)** - Accessing Marquez in private subnet
 - **[MONITORING.md](MONITORING.md)** - CloudWatch monitoring and metrics
 - **[PERFORMANCE_TESTING.md](PERFORMANCE_TESTING.md)** - Capacity testing and validation
+- **[DR_WITH_FALLBACK.md](DR_WITH_FALLBACK.md)** - Disaster recovery with automated failover and fallback
 
 ### Policies & Guidelines
 - **[SECURITY.md](SECURITY.md)** - Security policy and best practices
