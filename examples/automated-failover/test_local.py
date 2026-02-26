@@ -17,30 +17,41 @@ def test_health_check_logic():
     print("Testing Health Check Logic")
     print("=" * 60)
     
-    # Test scenarios
+    # Test scenarios with default config (heartbeat optional)
     scenarios = [
         {
-            "name": "Healthy environment",
+            "name": "Healthy environment with heartbeat",
             "env_status": "AVAILABLE",
             "has_heartbeat": True,
+            "require_heartbeat": False,
             "expected_healthy": True
+        },
+        {
+            "name": "Healthy environment without heartbeat (idle)",
+            "env_status": "AVAILABLE",
+            "has_heartbeat": False,
+            "require_heartbeat": False,
+            "expected_healthy": True  # Should be healthy when heartbeat is optional
         },
         {
             "name": "Environment unavailable",
             "env_status": "UNAVAILABLE",
             "has_heartbeat": True,
+            "require_heartbeat": False,
             "expected_healthy": False
         },
         {
-            "name": "No scheduler heartbeat",
+            "name": "No heartbeat when required",
             "env_status": "AVAILABLE",
             "has_heartbeat": False,
-            "expected_healthy": False
+            "require_heartbeat": True,
+            "expected_healthy": False  # Should fail when heartbeat is required
         },
         {
             "name": "Both checks failing",
             "env_status": "UNAVAILABLE",
             "has_heartbeat": False,
+            "require_heartbeat": False,
             "expected_healthy": False
         },
     ]
@@ -49,10 +60,15 @@ def test_health_check_logic():
     for scenario in scenarios:
         env_status = scenario["env_status"]
         has_heartbeat = scenario["has_heartbeat"]
+        require_heartbeat = scenario["require_heartbeat"]
         expected = scenario["expected_healthy"]
         
-        # Health check logic
-        is_healthy = (env_status == 'AVAILABLE' and has_heartbeat)
+        # Health check logic (matches Lambda)
+        is_healthy = True
+        if env_status != 'AVAILABLE':
+            is_healthy = False
+        if require_heartbeat and not has_heartbeat:
+            is_healthy = False
         
         passed = is_healthy == expected
         status = "✓ PASS" if passed else "✗ FAIL"
@@ -60,6 +76,7 @@ def test_health_check_logic():
         print(f"\n{status} - {scenario['name']}")
         print(f"  Environment: {env_status}")
         print(f"  Heartbeat: {has_heartbeat}")
+        print(f"  Require heartbeat: {require_heartbeat}")
         print(f"  Result: {'HEALTHY' if is_healthy else 'UNHEALTHY'}")
         print(f"  Expected: {'HEALTHY' if expected else 'UNHEALTHY'}")
         

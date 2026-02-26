@@ -19,10 +19,23 @@ This example adds automated failover capabilities to the MWAA DR setup. It conti
 - **Manual override** - Can still trigger manual failover when needed
 
 ### Health Check Criteria:
-1. **MWAA Environment Status**: Must be AVAILABLE
-2. **Scheduler Heartbeat**: Must have recent heartbeat metrics in CloudWatch
+1. **MWAA Environment Status**: Must be AVAILABLE (required)
+2. **Scheduler Heartbeat**: Must have recent heartbeat metrics in CloudWatch (optional)
 
-If both checks fail 3 times in a row, automated failover is triggered.
+If the environment status is not AVAILABLE 3 times in a row, automated failover is triggered.
+
+> **⚠️ IMPORTANT: Scheduler Heartbeat Behavior**
+>
+> The `SchedulerHeartbeat` metric in MWAA is only emitted when the scheduler is actively processing DAGs. 
+> When an MWAA environment is idle (no active DAG runs, all DAGs paused, or no scheduled tasks), this metric 
+> will have no datapoints. This is expected behavior, not a failure.
+>
+> **By default, the health check treats missing heartbeat as a warning, not a failure.** The health check will 
+> only trigger failover if the environment status is not AVAILABLE. You can make heartbeat checks mandatory by 
+> setting `REQUIRE_SCHEDULER_HEARTBEAT=true` in the configuration.
+>
+> **Recommendation**: Keep heartbeat checks optional (default) unless you have DAGs that run continuously and 
+> want to detect scheduler issues specifically.
 
 ## Architecture
 
@@ -79,6 +92,10 @@ HEALTH_CHECK_INTERVAL = "rate(1 minute)"  # How often to check
 FAILURE_THRESHOLD = 3  # Failures before failover
 COOLDOWN_MINUTES = 30  # Cooldown after failover
 
+# Health check criteria (optional)
+REQUIRE_SCHEDULER_HEARTBEAT = False  # Set to True to make heartbeat mandatory
+CHECK_ENVIRONMENT_STATUS = True  # Always check environment status (recommended)
+
 # Notification emails
 NOTIFICATION_EMAILS = [
     "your-email@example.com",
@@ -98,6 +115,13 @@ NOTIFICATION_EMAILS = [
 - **COOLDOWN_MINUTES**: Prevent flapping after failover
   - `30` - 30 minute cooldown (recommended)
   - `60` - 1 hour cooldown (more conservative)
+
+- **REQUIRE_SCHEDULER_HEARTBEAT**: Make scheduler heartbeat check mandatory
+  - `False` - Heartbeat is optional, only warn if missing (recommended)
+  - `True` - Heartbeat is required, fail if missing (use only if you have continuously running DAGs)
+
+- **CHECK_ENVIRONMENT_STATUS**: Check MWAA environment status
+  - `True` - Always check environment status (recommended, cannot be disabled)
 
 ## Deployment
 
@@ -333,10 +357,14 @@ Automated failover adds minimal cost:
 
 If health checks fail but MWAA is actually healthy:
 
-1. Check CloudWatch metrics for scheduler heartbeat
-2. Verify MWAA environment status in console
-3. Adjust FAILURE_THRESHOLD to be more conservative (e.g., 5 instead of 3)
-4. Increase HEALTH_CHECK_INTERVAL to reduce sensitivity
+1. **Check if environment is idle**: Missing scheduler heartbeat is normal for idle environments
+2. **Verify environment status**: Check MWAA console - should be AVAILABLE
+3. **Review health check logs**: Look for specific failure reasons in CloudWatch
+4. **Adjust configuration**:
+   - Set `REQUIRE_SCHEDULER_HEARTBEAT=False` (default) to make heartbeat optional
+   - Increase `FAILURE_THRESHOLD` to 5 instead of 3 for more conservative failover
+   - Increase `HEALTH_CHECK_INTERVAL` to reduce sensitivity
+5. **Check for actual issues**: Look for ImportErrors, S3SyncErrors in CloudWatch metrics
 
 ### Failover Not Triggering
 
@@ -382,6 +410,7 @@ If system keeps failing over back and forth:
 
 - `../disaster-recovery/README.md` - Manual DR setup (prerequisite)
 - `../disaster-recovery/AIRFLOW3_DR_LIMITATIONS.md` - DR limitations
+- `SCHEDULER_HEARTBEAT_NOTES.md` - Detailed explanation of scheduler heartbeat behavior
 
 ## Support
 

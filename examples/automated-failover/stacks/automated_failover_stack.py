@@ -43,6 +43,8 @@ class AutomatedFailoverStack(Stack):
         health_check_interval: str = "rate(1 minute)",
         failure_threshold: int = 3,
         cooldown_minutes: int = 30,
+        require_scheduler_heartbeat: bool = False,
+        check_environment_status: bool = True,
         notification_emails: list = None,
         **kwargs
     ) -> None:
@@ -58,6 +60,8 @@ class AutomatedFailoverStack(Stack):
         self.health_check_interval = health_check_interval
         self.failure_threshold = failure_threshold
         self.cooldown_minutes = cooldown_minutes
+        self.require_scheduler_heartbeat = require_scheduler_heartbeat
+        self.check_environment_status = check_environment_status
         self.notification_emails = notification_emails or []
 
         # Create SNS topic
@@ -165,6 +169,8 @@ class AutomatedFailoverStack(Stack):
                 "COOLDOWN_MINUTES": str(self.cooldown_minutes),
                 "NOTIFICATION_TOPIC_ARN": self.notification_topic.topic_arn,
                 "FAILOVER_FUNCTION_ARN": self.failover_function.function_arn,
+                "REQUIRE_SCHEDULER_HEARTBEAT": str(self.require_scheduler_heartbeat),
+                "CHECK_ENVIRONMENT_STATUS": str(self.check_environment_status),
             }
         )
 

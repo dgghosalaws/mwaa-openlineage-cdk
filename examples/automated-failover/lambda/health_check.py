@@ -158,6 +158,8 @@ def lambda_handler(event, context):
     - COOLDOWN_MINUTES: Cooldown period after failover (default: 30)
     - NOTIFICATION_TOPIC_ARN: SNS topic for notifications
     - FAILOVER_FUNCTION_ARN: Failover Lambda function ARN
+    - REQUIRE_SCHEDULER_HEARTBEAT: Make heartbeat check mandatory (default: False)
+    - CHECK_ENVIRONMENT_STATUS: Check environment status (default: True)
     """
     
     primary_env = os.environ['PRIMARY_ENV_NAME']
@@ -166,10 +168,13 @@ def lambda_handler(event, context):
     table_name = os.environ['STATE_TABLE_NAME']
     failure_threshold = int(os.environ.get('FAILURE_THRESHOLD', '3'))
     notification_topic = os.environ.get('NOTIFICATION_TOPIC_ARN')
+    require_heartbeat = os.environ.get('REQUIRE_SCHEDULER_HEARTBEAT', 'False').lower() == 'true'
+    check_env_status = os.environ.get('CHECK_ENVIRONMENT_STATUS', 'True').lower() == 'true'
     
     table = dynamodb.Table(table_name)
     
     print(f"Checking health of {primary_env} in {primary_region}")
+    print(f"Configuration: require_heartbeat={require_heartbeat}, check_env_status={check_env_status}")
     
     # Check if we're in cooldown period
     if check_cooldown(table):
@@ -198,15 +203,29 @@ def lambda_handler(event, context):
         }
     
     # Perform health checks
-    env_status = get_environment_status(primary_env, primary_region)
+    env_status = get_environment_status(primary_env, primary_region) if check_env_status else 'AVAILABLE'
     has_heartbeat = get_scheduler_heartbeat(primary_env, primary_region)
     
-    is_healthy = (env_status == 'AVAILABLE' and has_heartbeat)
+    # Determine overall health based on configuration
+    is_healthy = True
+    failure_reasons = []
+    
+    if check_env_status and env_status != 'AVAILABLE':
+        is_healthy = False
+        failure_reasons.append(f"Environment status is {env_status} (expected AVAILABLE)")
+    
+    if require_heartbeat and not has_heartbeat:
+        is_healthy = False
+        failure_reasons.append("Scheduler heartbeat missing (required)")
+    elif not has_heartbeat:
+        print("WARNING: Scheduler heartbeat missing (optional check, not failing)")
     
     print(f"Health check results:")
     print(f"  Environment status: {env_status}")
     print(f"  Scheduler heartbeat: {has_heartbeat}")
     print(f"  Overall health: {'HEALTHY' if is_healthy else 'UNHEALTHY'}")
+    if failure_reasons:
+        print(f"  Failure reasons: {', '.join(failure_reasons)}")
     
     # Update health state
     consecutive_failures = update_health_state(table, primary_region, is_healthy)
@@ -217,7 +236,7 @@ def lambda_handler(event, context):
     if consecutive_failures >= failure_threshold:
         print(f"Failure threshold reached! Triggering failover to {secondary_region}")
         
-        reason = f"Automated failover: {consecutive_failures} consecutive health check failures"
+        reason = f"Automated failover: {consecutive_failures} consecutive health check failures. Reasons: {', '.join(failure_reasons)}"
         
         # Send notification
         if notification_topic:
@@ -237,6 +256,9 @@ Environment Status: {env_status}
 Scheduler Heartbeat: {has_heartbeat}
 Consecutive Failures: {consecutive_failures}
 
+Failure Details:
+{chr(10).join('- ' + r for r in failure_reasons)}
+
 Failover is now in progress. You will receive another notification when complete.
                 """
             )
@@ -250,7 +272,8 @@ Failover is now in progress. You will receive another notification when complete
                 'body': json.dumps({
                     'action': 'failover_triggered',
                     'consecutive_failures': consecutive_failures,
-                    'target_region': secondary_region
+                    'target_region': secondary_region,
+                    'failure_reasons': failure_reasons
                 })
             }
         else:
@@ -275,6 +298,9 @@ Scheduler Heartbeat: {has_heartbeat}
 
 Consecutive Failures: {consecutive_failures}/{failure_threshold}
 
+Failure Details:
+{chr(10).join('- ' + r for r in failure_reasons) if failure_reasons else '- No specific failures (environment may be idle)'}
+
 Automated failover will trigger if {failure_threshold - consecutive_failures} more consecutive failures occur.
             """
         )
@@ -285,6 +311,7 @@ Automated failover will trigger if {failure_threshold - consecutive_failures} mo
             'is_healthy': is_healthy,
             'consecutive_failures': consecutive_failures,
             'env_status': env_status,
-            'has_heartbeat': has_heartbeat
+            'has_heartbeat': has_heartbeat,
+            'failure_reasons': failure_reasons
         })
     }

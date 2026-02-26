@@ -24,6 +24,10 @@ HEALTH_CHECK_INTERVAL = "rate(1 minute)"  # How often to check health
 FAILURE_THRESHOLD = 3  # Number of consecutive failures before failover
 COOLDOWN_MINUTES = 30  # Cooldown period after failover to prevent flapping
 
+# Health check criteria (optional)
+REQUIRE_SCHEDULER_HEARTBEAT = False  # Set to True to make heartbeat mandatory
+CHECK_ENVIRONMENT_STATUS = True  # Always check environment status (recommended)
+
 # Notification emails (optional)
 NOTIFICATION_EMAILS = [
     # "your-email@example.com",
@@ -43,6 +47,8 @@ AutomatedFailoverStack(
     health_check_interval=HEALTH_CHECK_INTERVAL,
     failure_threshold=FAILURE_THRESHOLD,
     cooldown_minutes=COOLDOWN_MINUTES,
+    require_scheduler_heartbeat=REQUIRE_SCHEDULER_HEARTBEAT,
+    check_environment_status=CHECK_ENVIRONMENT_STATUS,
     notification_emails=NOTIFICATION_EMAILS,
     env=cdk.Environment(region=PRIMARY_REGION),
     description="MWAA Automated Failover - Health monitoring and automated failover"
