@@ -86,6 +86,29 @@ This example demonstrates how to deploy MWAA in a disaster recovery (DR) configu
 
 ## Deployment
 
+You can deploy using either the automated script or manual CDK commands.
+
+### Option A: Automated Deployment (Recommended)
+
+Use the provided script to deploy all components:
+
+```bash
+cd examples/disaster-recovery
+chmod +x deploy_dr_simple.sh
+./deploy_dr_simple.sh
+```
+
+This script will:
+1. Deploy DynamoDB state table
+2. Initialize DR state
+3. Deploy primary MWAA environment
+4. Deploy secondary MWAA environment
+5. Upload DR plugin to both regions
+
+### Option B: Manual Deployment
+
+If you prefer step-by-step control, follow these manual steps:
+
 ### Step 1: Deploy DynamoDB State Table
 
 ```bash
