@@ -7,8 +7,8 @@ This example demonstrates how to deploy MWAA in a disaster recovery (DR) configu
 ### Core DR Capabilities:
 - **Dual-region MWAA deployment** - Primary and secondary MWAA environments
 - **DynamoDB state management** - Tracks which region is active
-- **Automatic DAG control** - DAGs pause/unpause based on active region
-- **Manual failover** - Scripts to switch active region
+- **Automatic DAG run skipping** - Plugin prevents DAG runs in standby region
+- **Manual failover with DAG control** - Scripts to switch active region and pause/unpause DAGs
 
 ### What's NOT Included (Requires Separate Implementation):
 - ❌ Metadata backup/restore (Airflow 3.0 limitation - see AIRFLOW3_DR_LIMITATIONS.md)
@@ -39,12 +39,36 @@ This example demonstrates how to deploy MWAA in a disaster recovery (DR) configu
 │  + Plugin        │                       │  + Plugin        │
 │                  │                       │                  │
 │  If active:      │                       │  If active:      │
-│  ✓ DAGs run      │                       │  ✓ DAGs run      │
+│  ✓ DAGs UNPAUSED │                       │  ✓ DAGs UNPAUSED │
+│  ✓ Runs execute  │                       │  ✓ Runs execute  │
 │                  │                       │                  │
 │  If standby:     │                       │  If standby:     │
-│  ✗ DAGs paused   │                       │  ✗ DAGs paused   │
+│  ✗ DAGs PAUSED   │                       │  ✗ DAGs PAUSED   │
+│  ✗ Plugin skips  │                       │  ✗ Plugin skips  │
+│    new runs      │                       │    new runs      │
 └──────────────────┘                       └──────────────────┘
 ```
+
+### How DAG Control Works
+
+The DR solution uses a dual-mechanism approach:
+
+1. **Failover Script (Active Control)**:
+   - Runs during failover
+   - Pauses DAGs in old active region via Airflow API
+   - Unpauses DAGs in new active region via Airflow API
+   - Ensures DAGs are in correct state immediately after failover
+
+2. **DR State Plugin (Safety Net)**:
+   - Runs on every DAG run start
+   - Checks DynamoDB for active region
+   - Skips DAG run if current region is not active
+   - Provides protection even if DAG is accidentally unpaused in standby region
+
+This dual approach ensures no DAG runs execute in the standby region, even if:
+- Someone manually unpauses a DAG in standby region
+- Failover script fails to pause a DAG
+- New DAGs are added after failover
 
 ## Components
 
@@ -61,12 +85,13 @@ This example demonstrates how to deploy MWAA in a disaster recovery (DR) configu
 
 ### 2. DR State Plugin
 - **File**: `assets/plugins/dr_state_plugin.py`
-- **Purpose**: Automatically pauses/unpauses DAGs based on active region
+- **Purpose**: Automatically skips DAG runs in standby region
 - **How it works**: 
-  - Runs on scheduler startup and periodically
+  - Runs on every DAG run start
   - Reads active region from DynamoDB
-  - Pauses all DAGs if current region is not active
-  - Unpauses all DAGs if current region is active
+  - If current region is not active, marks DAG run as SKIPPED
+  - Provides safety net to prevent accidental execution in standby region
+- **Note**: This plugin SKIPS new DAG runs but doesn't pause the DAG itself. DAGs are paused/unpaused during failover via the failover script.
 
 ### 3. Deployment Script
 - `deploy_dr_simple.sh` - Automated deployment to existing MWAA environments
@@ -75,7 +100,11 @@ This example demonstrates how to deploy MWAA in a disaster recovery (DR) configu
 - Uploads plugin and triggers MWAA updates
 
 ### 4. Failover Scripts
-- `scripts/failover_with_dag_control.sh` - Switch active region
+- `scripts/failover_with_dag_control.sh` - Switch active region and control DAGs
+  - Updates DynamoDB to set new active region
+  - Pauses all DAGs in old active region (via Airflow API)
+  - Unpauses all DAGs in new active region (via Airflow API)
+  - Completes in ~15-20 seconds
 - `scripts/init_dr_state.sh` - Initialize DynamoDB state
 
 ### 5. Test DAG (Optional)
@@ -236,6 +265,18 @@ Check the test DAG in Airflow UI:
 
 ## Failover Procedure
 
+### How Failover Works
+
+The DR solution uses two mechanisms to prevent DAG execution in standby region:
+
+1. **Plugin Safety Net**: The DR state plugin automatically skips any NEW DAG runs that start in the standby region
+2. **Failover Script**: During failover, the script actively pauses DAGs in the old active region and unpauses them in the new active region
+
+This dual approach ensures:
+- No DAG runs execute in standby region (plugin prevents new runs)
+- DAGs are properly paused/unpaused during failover (script manages state)
+- Fast failover (~15-20 seconds total)
+
 ### Manual Failover
 
 To switch from us-east-2 (primary) to us-east-1 (secondary):
@@ -245,10 +286,12 @@ To switch from us-east-2 (primary) to us-east-1 (secondary):
 ```
 
 This will:
-1. Update DynamoDB: active_region = us-east-1
-2. Pause DAGs in us-east-2 (via API)
-3. Unpause DAGs in us-east-1 (via API)
+1. Update DynamoDB: active_region = us-east-1 (~1 second)
+2. Pause all DAGs in us-east-2 via Airflow API (~5-10 seconds)
+3. Unpause all DAGs in us-east-1 via Airflow API (~5-10 seconds)
 4. Verify state change
+
+Total time: ~15-20 seconds
 
 ### Fallback
 
@@ -290,15 +333,26 @@ To switch back to primary:
 
 ### Test 2: Failover
 
-1. Perform failover to secondary
-2. Wait 2-3 minutes for plugin to detect change
+1. Perform failover to secondary:
+   ```bash
+   ./scripts/failover_with_dag_control.sh us-east-1 "Testing failover"
+   ```
+
+2. Wait 30 seconds for failover to complete
+
 3. Check `dr_test_dag` status in both regions:
-   - Old active region: DAG should now be PAUSED
-   - New active region: DAG should now be UNPAUSED
+   - Old active region (us-east-2): DAG should now be PAUSED
+   - New active region (us-east-1): DAG should now be UNPAUSED
+
 4. Verify DAG runs:
-   - Old active region: No new runs
-   - New active region: New runs every 10 minutes
+   - Old active region: No new runs (DAG is paused)
+   - New active region: New runs every 10 minutes (DAG is unpaused)
+
 5. Check logs in new active region to confirm execution
+
+6. Verify plugin safety net:
+   - If you manually unpause a DAG in standby region, new runs will still be SKIPPED by the plugin
+   - This provides double protection against accidental execution
 
 ## Configuration
 
