@@ -21,9 +21,7 @@ Deploy MWAA across two AWS regions with manual failover capabilities.
 **Quick Start**:
 ```bash
 cd disaster-recovery
-./scripts/deploy_dr_infrastructure.sh
-./scripts/init_dr_state.sh us-east-1
-./scripts/deploy_phase2_with_existing_bucket.sh
+./deploy_dr_simple.sh
 ```
 
 **Documentation**: See `disaster-recovery/README.md`
