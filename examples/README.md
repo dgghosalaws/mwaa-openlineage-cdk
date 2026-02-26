@@ -11,10 +11,10 @@ Deploy MWAA across two AWS regions with manual failover capabilities.
 
 **Features**:
 - Manual failover with DAG control (pause/unpause)
-- DynamoDB Global Table for state management
-- Sensor-based region detection (2-3 seconds)
-- Cross-region S3 bucket replication for DAGs and plugins
-- Cost: ~$0.43/month
+- DynamoDB state table for active region tracking
+- DR plugin automatically skips DAG runs in standby region
+- Dual-mechanism protection (plugin + failover script)
+- Cost: ~$0.43/month (DynamoDB only)
 
 **Use Case**: Production environments requiring cross-region disaster recovery with controlled failover
 
