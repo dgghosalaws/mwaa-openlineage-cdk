@@ -151,6 +151,7 @@ class DRMwaaStack(Stack):
             source_bucket_arn=mwaa_bucket.bucket_arn,
             dag_s3_path="dags",
             requirements_s3_path="requirements.txt",
+            plugins_s3_path="plugins.zip",
             network_configuration=mwaa.CfnEnvironment.NetworkConfigurationProperty(
                 security_group_ids=[mwaa_sg.security_group_id],
                 subnet_ids=private_subnet_ids,
