@@ -180,6 +180,10 @@ class DRMwaaStack(Stack):
             airflow_configuration_options={
                 "core.load_default_connections": "false",
                 "core.load_examples": "false",
+                # DR Configuration - accessible via Airflow Variables
+                "dr.state_table": dr_state_table.table_name,
+                "dr.table_region": primary_region,
+                "dr.current_region": region_name,
             },
             webserver_access_mode="PUBLIC_ONLY",
             weekly_maintenance_window_start="SUN:03:00",

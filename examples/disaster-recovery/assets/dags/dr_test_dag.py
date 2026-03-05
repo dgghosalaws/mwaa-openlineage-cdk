@@ -7,6 +7,7 @@ This DAG demonstrates the simplest DR-aware pattern:
 3. If STANDBY: Skip the work task
 
 This is the recommended pattern for all production DAGs in a DR setup.
+Configuration is read from Airflow config (set in MWAA airflow_configuration_options).
 """
 from datetime import datetime, timedelta
 from airflow import DAG
@@ -30,6 +31,7 @@ def check_active_region(**context):
     Returns: 'run_work' if active, 'skip_work' if standby
     """
     import boto3
+    from airflow.configuration import conf
     
     # Get current region
     try:
@@ -39,15 +41,17 @@ def check_active_region(**context):
         print(f"Error getting region: {e}")
         current_region = os.environ.get('AWS_DEFAULT_REGION', 'unknown')
     
-    # DynamoDB configuration
-    state_table = 'mwaa-openlineage-dr-state-dev'
-    table_region = 'us-east-2'
+    # Read DR configuration from Airflow config
+    # These are set in MWAA airflow_configuration_options
+    state_table = conf.get('dr', 'state_table', fallback='mwaa-openlineage-dr-state-dev')
+    table_region = conf.get('dr', 'table_region', fallback='us-east-2')
     
     print(f"=" * 60)
     print(f"DR Active Region Check")
     print(f"=" * 60)
     print(f"Current Region: {current_region}")
     print(f"State Table: {state_table} (in {table_region})")
+    print(f"Config Source: Airflow configuration")
     
     try:
         # Query DynamoDB for active region
