@@ -1,19 +1,21 @@
 # MWAA Disaster Recovery Example
 
-This example demonstrates how to deploy MWAA in a disaster recovery (DR) configuration across two AWS regions with automatic DAG control based on the active region.
+This example provides a complete, self-contained MWAA DR setup that deploys everything needed for a functional disaster recovery configuration across two AWS regions.
 
 ## What This Example Provides
 
-### Core DR Capabilities:
-- **Dual-region MWAA deployment** - Primary and secondary MWAA environments
+### Complete DR Infrastructure:
+- **Network infrastructure** - VPC, subnets, security groups in both regions
+- **Minimal MWAA environments** - Primary and secondary MWAA (no OpenLineage/Marquez)
 - **DynamoDB state management** - Tracks which region is active
-- **Automatic DAG run skipping** - Plugin prevents DAG runs in standby region
-- **Manual failover with DAG control** - Scripts to switch active region and pause/unpause DAGs
+- **Manual failover scripts** - Switch active region and pause/unpause DAGs
+- **Test DAG included** - Verify DR behavior immediately after deployment
 
 ### What's NOT Included (Requires Separate Implementation):
 - ❌ Metadata backup/restore (Airflow 3.0 limitation - see AIRFLOW3_DR_LIMITATIONS.md)
 - ❌ Automatic failover (requires health monitoring - see `../automated-failover/` example)
 - ❌ Data replication (S3, databases)
+- ❌ OpenLineage/Marquez (this is a minimal MWAA example)
 
 ## Architecture
 
@@ -26,7 +28,7 @@ This example demonstrates how to deploy MWAA in a disaster recovery (DR) configu
 │  active_region: "us-east-1" or "us-east-2"               │
 └─────────────────────────────────────────────────────────────┘
                               │
-                              │ Reads state
+                              │ Read/Write by failover script
                               │
         ┌─────────────────────┴─────────────────────┐
         │                                           │
@@ -36,7 +38,6 @@ This example demonstrates how to deploy MWAA in a disaster recovery (DR) configu
 │   (us-east-2)    │                       │   (us-east-1)    │
 │                  │                       │                  │
 │  MWAA Env        │                       │  MWAA Env        │
-│  + Plugin        │                       │  + Plugin        │
 │                  │                       │                  │
 │  If active:      │                       │  If active:      │
 │  ✓ DAGs UNPAUSED │                       │  ✓ DAGs UNPAUSED │
@@ -44,591 +45,392 @@ This example demonstrates how to deploy MWAA in a disaster recovery (DR) configu
 │                  │                       │                  │
 │  If standby:     │                       │  If standby:     │
 │  ✗ DAGs PAUSED   │                       │  ✗ DAGs PAUSED   │
-│  ✗ Plugin skips  │                       │  ✗ Plugin skips  │
-│    new runs      │                       │    new runs      │
+│  ✗ No execution  │                       │  ✗ No execution  │
 └──────────────────┘                       └──────────────────┘
 ```
 
-### How DAG Control Works
+## How DR Works
 
-The DR solution uses a dual-mechanism approach:
+### Failover Process
+1. **Update DynamoDB**: Set `active_region` to target region
+2. **Pause DAGs**: In the old active region (prevents execution)
+3. **Unpause DAGs**: In the new active region (allows execution)
+4. **Verify**: Check DAG states in both regions
 
-1. **Failover Script (Active Control)**:
-   - Runs during failover
-   - Pauses DAGs in old active region via Airflow API
-   - Unpauses DAGs in new active region via Airflow API
-   - Ensures DAGs are in correct state immediately after failover
+### Why DAG Pause/Unpause?
+- **Active region**: DAGs are unpaused and run on schedule
+- **Standby region**: DAGs are paused and don't execute
+- **No DAG code changes required**: Works with any existing DAGs
+- **No plugin required**: Uses Airflow's built-in pause functionality
 
-2. **DR State Plugin (Safety Net)**:
-   - Runs on every DAG run start
-   - Checks DynamoDB for active region
-   - Skips DAG run if current region is not active
-   - Provides protection even if DAG is accidentally unpaused in standby region
-
-This dual approach ensures no DAG runs execute in the standby region, even if:
-- Someone manually unpauses a DAG in standby region
-- Failover script fails to pause a DAG
-- New DAGs are added after failover
+### DynamoDB State Table
+- **Single source of truth** for which region is active
+- Stores failover history and timestamps
+- Used by failover scripts and automated failover system
+- Simple, reliable, and cost-effective
 
 ## Components
 
 ### 1. DynamoDB State Table
-- **Purpose**: Single source of truth for active region
-- **Type**: Regional table (not Global Table)
-- **Location**: Primary region (us-east-2)
-- **Access**: Secondary region reads from primary region's table via cross-region access
-- **Schema**:
-  - `state_id`: Always "ACTIVE_REGION" (single row table)
-  - `active_region`: Current active region (e.g., "us-east-2" or "us-east-1")
-  - `last_updated`: Timestamp of last state change
-  - `failover_count`: Number of failovers
-  - `version`: Optimistic locking version number
+- **Table**: `mwaa-openlineage-dr-state-dev`
+- **Region**: us-east-2 (primary)
+- **Purpose**: Tracks active region and failover history
+- **Cost**: <$1/month
 
-**Why Regional Table Instead of Global Table?**
+### 2. MWAA Environments
+- **Primary**: `mwaa-openlineage-dr-primary-dev` (us-east-2)
+- **Secondary**: `mwaa-openlineage-dr-secondary-dev` (us-east-1)
+- **Size**: mw1.small (1-2 workers)
+- **Version**: Airflow 3.0.6
 
-This implementation uses a regional DynamoDB table for cost-effectiveness. Here's the tradeoff:
+### 3. Failover Scripts
+- **Manual failover**: `scripts/failover_with_dag_control.sh`
+- **DAG control**: Pause/unpause all DAGs in a region
+- **State management**: Update DynamoDB active region
 
-| Aspect | Regional Table (Current) | Global Table |
-|--------|-------------------------|--------------|
-| Cost | ~$0.43/month | ~$2-3/month |
-| Resilience | Depends on primary region | Independent replicas in both regions |
-| Read Latency | Cross-region reads (~50-100ms) | Local reads (~single-digit ms) |
-| Setup Complexity | Simple | More complex |
-| Best For | Manual failover, infrequent updates | Automatic failover, frequent updates |
-
-**Regional table is sufficient because:**
-- State is updated only during failover (rare event)
-- Single row with minimal data
-- Plugin has "fail-open" design - if DynamoDB is unreachable, DAGs run (prevents outages)
-- Manual failover means you're already intervening if primary region fails
-- Real resilience comes from dual-mechanism approach (plugin + failover script)
-
-**Consider Global Table if:**
-- You need automatic failover without any dependency on primary region
-- You're implementing active-active (both regions writing)
-- You have strict latency requirements for state reads
-- You want maximum resilience regardless of cost
-
-### 2. DR State Plugin
-- **File**: `assets/plugins/dr_state_plugin.py`
-- **Purpose**: Automatically skips DAG runs in standby region
-- **How it works**: 
-  - Runs on every DAG run start
-  - Reads active region from DynamoDB
-  - If current region is not active, marks DAG run as SKIPPED
-  - Provides safety net to prevent accidental execution in standby region
-- **Note**: This plugin SKIPS new DAG runs but doesn't pause the DAG itself. DAGs are paused/unpaused during failover via the failover script.
-
-### 3. Deployment Script
-- `deploy_dr_simple.sh` - Automated deployment to existing MWAA environments
-- Verifies MWAA environments exist
-- Deploys DynamoDB state table
-- Uploads plugin and triggers MWAA updates
-
-### 4. Failover Scripts
-- `scripts/failover_with_dag_control.sh` - Switch active region and control DAGs
-  - Updates DynamoDB to set new active region
-  - Pauses all DAGs in old active region (via Airflow API)
-  - Unpauses all DAGs in new active region (via Airflow API)
-  - Completes in ~15-20 seconds
-- `scripts/init_dr_state.sh` - Initialize DynamoDB state
-
-### 5. Test DAG (Optional)
-- `assets/dags/dr_test_dag.py` - Airflow 3.0 compatible test DAG
-- Runs every 10 minutes in active region
-- Automatically paused in standby region
-- Prints region info and execution details
-- Helps verify DR plugin is working correctly
+### 4. Test DAG
+- **File**: `assets/dags/dr_test_dag.py`
+- **Purpose**: Verify DR behavior
+- **Schedule**: Every 5 minutes
+- **Tasks**: Print region info, check region, verify execution
 
 ## Prerequisites
 
-- AWS CLI configured with appropriate permissions
-- Python 3.8+ installed
-- boto3 Python library installed
+1. **AWS Account**: With permissions to create MWAA, VPC, DynamoDB, S3
+2. **AWS CDK**: Installed and configured
+3. **Python 3.9+**: For CDK deployment
+4. **AWS CLI**: For manual operations
 
-## Deployment Options
+## Deployment
 
-Choose the deployment path that matches your situation:
+### Option 1: Complete Deployment (Recommended)
 
-### 🆕 Option 1: Deploy New MWAA Environments with DR (Recommended)
+Deploy everything in one command:
 
-**Best for:** Creating new MWAA environments from scratch with DR capabilities built-in
-
-**Benefits:**
-- ✅ DR plugin enabled from first deployment (no manual configuration step)
-- ✅ All configuration is version-controlled in CDK code
-- ✅ Consistent and repeatable deployments
-- ✅ No need to update MWAA environments after deployment
-
-**Steps:**
-
-1. **Include DR configuration in your MWAA CDK stack:**
-
-```python
-# In your MWAA CDK stack (e.g., stacks/mwaa_stack.py)
-import aws_cdk as cdk
-from aws_cdk import aws_mwaa as mwaa
-
-# Primary Region MWAA (us-east-2)
-primary_mwaa = mwaa.CfnEnvironment(
-    self,
-    "PrimaryMwaa",
-    name="mwaa-primary-dev",
-    # ... other MWAA configuration (network, S3, etc.) ...
-    airflow_configuration_options={
-        # ... other Airflow config ...
-        
-        # DR Configuration - Include from the start!
-        "dr.enabled": "true",
-        "dr.state_table": "mwaa-openlineage-dr-state-dev",
-        "dr.state_source": "dynamodb",
-        "dr.state_table_region": "us-east-2",
-    },
-)
-
-# Secondary Region MWAA (us-east-1) - Same DR configuration
-secondary_mwaa = mwaa.CfnEnvironment(
-    self,
-    "SecondaryMwaa",
-    name="mwaa-secondary-dev",
-    # ... other MWAA configuration ...
-    airflow_configuration_options={
-        # ... other Airflow config ...
-        
-        # DR Configuration - Same as primary
-        "dr.enabled": "true",
-        "dr.state_table": "mwaa-openlineage-dr-state-dev",
-        "dr.state_source": "dynamodb",
-        "dr.state_table_region": "us-east-2",  # Same table region
-    },
-)
+```bash
+cd examples/disaster-recovery
+./deploy_complete.sh
 ```
 
-2. **Deploy DynamoDB state table:**
+This script:
+1. Installs Python dependencies
+2. Deploys all CDK stacks (network, S3, DynamoDB, MWAA)
+3. Uploads DAGs and requirements to S3
+4. Initializes DynamoDB state (sets us-east-2 as active)
+5. Waits for MWAA environments to be ready
+
+**Duration**: ~30-40 minutes (MWAA creation takes time)
+
+After deployment completes, you'll have:
+- ✅ Two MWAA environments (primary in us-east-2, secondary in us-east-1)
+- ✅ DynamoDB state table with us-east-2 as active region
+- ✅ Test DAG running in primary, paused in secondary
+- ✅ Ready to test failover
+
+### Option 2: Manual Step-by-Step Deployment
+
+If you prefer manual control:
+
+#### Step 1: Install Dependencies
 
 ```bash
 cd examples/disaster-recovery
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
-cdk deploy MwaaDRStateStack --region us-east-2
 ```
 
-3. **Initialize DR state:**
+#### Step 2: Deploy Infrastructure
 
 ```bash
-./scripts/init_dr_state.sh us-east-2
+# Deploy all stacks
+cdk deploy --all
 ```
 
-4. **Upload DR plugin to S3:**
+This creates:
+- Network stacks (VPC, subnets, security groups) in both regions
+- S3 buckets for MWAA assets in both regions
+- DynamoDB state table in us-east-2
+- MWAA environments in both regions
+
+#### Step 3: Upload Assets
 
 ```bash
-# Get your MWAA S3 bucket names
-PRIMARY_BUCKET=$(aws mwaa get-environment \
-  --name mwaa-primary-dev \
+# Get bucket names
+PRIMARY_BUCKET=$(aws cloudformation describe-stacks \
+  --stack-name MwaaDRS3Primary \
   --region us-east-2 \
-  --query 'Environment.SourceBucketArn' \
-  --output text | cut -d':' -f6)
+  --query 'Stacks[0].Outputs[?OutputKey==`MwaaBucketName`].OutputValue' \
+  --output text)
 
-SECONDARY_BUCKET=$(aws mwaa get-environment \
-  --name mwaa-secondary-dev \
+SECONDARY_BUCKET=$(aws cloudformation describe-stacks \
+  --stack-name MwaaDRS3Secondary \
   --region us-east-1 \
-  --query 'Environment.SourceBucketArn' \
-  --output text | cut -d':' -f6)
+  --query 'Stacks[0].Outputs[?OutputKey==`MwaaBucketName`].OutputValue' \
+  --output text)
 
-# Upload plugin
-aws s3 cp assets/plugins/dr_state_plugin.py s3://$PRIMARY_BUCKET/plugins/ --region us-east-2
-aws s3 cp assets/plugins/dr_state_plugin.py s3://$SECONDARY_BUCKET/plugins/ --region us-east-1
+# Upload DAGs
+aws s3 cp assets/dags/dr_test_dag.py s3://$PRIMARY_BUCKET/dags/ --region us-east-2
+aws s3 cp assets/dags/dr_test_dag.py s3://$SECONDARY_BUCKET/dags/ --region us-east-1
+
+# Upload requirements
+aws s3 cp assets/requirements/requirements.txt s3://$PRIMARY_BUCKET/ --region us-east-2
+aws s3 cp assets/requirements/requirements.txt s3://$SECONDARY_BUCKET/ --region us-east-1
 ```
 
-5. **Deploy your MWAA stacks:**
+#### Step 4: Initialize DynamoDB State
 
 ```bash
-cdk deploy PrimaryMwaaStack --region us-east-2
-cdk deploy SecondaryMwaaStack --region us-east-1
-```
-
-**That's it!** Your MWAA environments will be created with DR plugin enabled. No manual configuration step needed.
-
----
-
-### 🔧 Option 2: Add DR to Existing MWAA Environments
-
-**Best for:** Adding DR capabilities to MWAA environments that are already deployed
-
-**Important:** This requires a manual configuration step after deployment to enable the DR plugin.
-
-#### Step 1: Automated Deployment Script
-
-Use the provided script to deploy all components:
-
-```bash
-cd examples/disaster-recovery
-chmod +x deploy_dr_simple.sh
-./deploy_dr_simple.sh
-```
-
-The script will:
-1. Verify your existing MWAA environments
-2. Deploy DynamoDB state table
-3. Initialize DR state (set active region)
-4. Upload DR plugin to both MWAA environments
-5. Trigger MWAA environment updates to load the plugin
-6. Upload test DAG (optional)
-
-Important: MWAA takes 20-30 minutes to apply plugin updates. The environments will show "Updating" status during this time.
-
-#### Step 2: ⚠️ CRITICAL - Enable DR Plugin (Required Manual Step)
-
-**After the deployment script completes, you MUST configure the DR plugin in both MWAA environments.**
-
-The plugin is uploaded but disabled by default. Enable it with:
-
-**Primary Region (us-east-2):**
-```bash
-aws mwaa update-environment \
-  --name mwaa-openlineage-dev \
-  --region us-east-2 \
-  --airflow-configuration-options \
-    dr.enabled=true,\
-    dr.state_table=mwaa-openlineage-dr-state-dev,\
-    dr.state_source=dynamodb,\
-    dr.state_table_region=us-east-2
-```
-
-**Secondary Region (us-east-1):**
-```bash
-aws mwaa update-environment \
-  --name mwaa-openlineage-dev \
-  --region us-east-1 \
-  --airflow-configuration-options \
-    dr.enabled=true,\
-    dr.state_table=mwaa-openlineage-dr-state-dev,\
-    dr.state_source=dynamodb,\
-    dr.state_table_region=us-east-2
-```
-
-**Important Configuration Parameters:**
-
-- `dr.enabled`: Set to `true` to enable DR plugin (REQUIRED)
-- `dr.state_table`: DynamoDB table name (default: `mwaa-openlineage-dr-state-dev`)
-- `dr.state_source`: State source type - `dynamodb` or `parameter_store` (default: `dynamodb`)
-- `dr.state_table_region`: AWS region where DynamoDB table is located (REQUIRED for cross-region access)
-  - Primary region: Set to `us-east-2` (reads from local table)
-  - Secondary region: Set to `us-east-2` (reads from primary region's table via cross-region access)
-
-**Why `dr.state_table_region` is Required:**
-
-The DynamoDB state table is created only in the primary region (us-east-2). Both regions need to read from this same table:
-- Without this parameter, each region would try to connect to a table in its own region
-- Secondary region (us-east-1) would fail because no table exists there
-- With this parameter, both regions connect to the table in us-east-2
-
-**Important Notes:**
-- Replace environment names with your actual MWAA environment names
-- Replace table name if you used a different name
-- This triggers another MWAA environment update (20-30 minutes)
-- **Without this step, the DR plugin will NOT work!**
-
----
-```bash
-aws mwaa update-environment \
-  --name mwaa-openlineage-minimal-dev \
-  --region us-east-1 \
-  --airflow-configuration-options \
-    dr.enabled=true,\
-    dr.state_table=mwaa-openlineage-dr-state-dev,\
-    dr.state_source=dynamodb,\
-    dr.state_table_region=us-east-2
-```
-
-**Important Notes:**
-- Replace environment names with your actual MWAA environment names
-- Replace table name if you used a different name
-- This triggers another MWAA environment update (20-30 minutes)
-- **Without this step, the DR plugin will NOT work!**
-
----
-
-### 📋 Option 2 Alternative: Manual Step-by-Step Deployment
-
-If you prefer step-by-step control over the automated script:
-
-#### Step 1: Configure Your Environment Names
-
-Edit `deploy_dr_simple.sh` and update these variables:
-
-```bash
-PRIMARY_MWAA_NAME="your-primary-mwaa-name"
-SECONDARY_MWAA_NAME="your-secondary-mwaa-name"
-PRIMARY_REGION="us-east-2"
-SECONDARY_REGION="us-east-1"
-```
-
-#### Step 2: Deploy DynamoDB State Table
-
-```bash
-cd examples/disaster-recovery
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-
-cdk deploy MwaaDRStateStack --region us-east-2
-```
-
-#### Step 3: Initialize DR State
-
-```bash
-./scripts/init_dr_state.sh us-east-2
-```
-
-This sets us-east-2 as the initial active region.
-
-#### Step 4: Upload DR Plugin
-
-Get your MWAA S3 bucket names:
-
-```bash
-PRIMARY_BUCKET=$(aws mwaa get-environment \
-  --name YOUR-PRIMARY-MWAA-NAME \
-  --region us-east-2 \
-  --query 'Environment.SourceBucketArn' \
-  --output text | cut -d':' -f6)
-
-SECONDARY_BUCKET=$(aws mwaa get-environment \
-  --name YOUR-SECONDARY-MWAA-NAME \
-  --region us-east-1 \
-  --query 'Environment.SourceBucketArn' \
-  --output text | cut -d':' -f6)
-```
-
-Upload plugin to both regions:
-
-```bash
-aws s3 cp assets/plugins/dr_state_plugin.py \
-  s3://$PRIMARY_BUCKET/plugins/ \
+aws dynamodb put-item \
+  --table-name mwaa-openlineage-dr-state-dev \
+  --item '{
+    "state_id": {"S": "ACTIVE_REGION"},
+    "active_region": {"S": "us-east-2"},
+    "last_updated": {"S": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}
+  }' \
   --region us-east-2
-
-aws s3 cp assets/plugins/dr_state_plugin.py \
-  s3://$SECONDARY_BUCKET/plugins/ \
-  --region us-east-1
 ```
 
-#### Step 5: Trigger MWAA to Load Plugin
+#### Step 5: Wait for MWAA Environments
 
 ```bash
-# Update primary environment
-aws mwaa update-environment \
-  --name YOUR-PRIMARY-MWAA-NAME \
+# Check primary
+aws mwaa get-environment \
+  --name mwaa-openlineage-dr-primary-dev \
   --region us-east-2 \
-  --plugins-s3-path plugins/dr_state_plugin.py
+  --query 'Environment.Status'
 
-# Update secondary environment
-aws mwaa update-environment \
-  --name YOUR-SECONDARY-MWAA-NAME \
+# Check secondary
+aws mwaa get-environment \
+  --name mwaa-openlineage-dr-secondary-dev \
   --region us-east-1 \
-  --plugins-s3-path plugins/dr_state_plugin.py
+  --query 'Environment.Status'
 ```
 
-Wait 20-30 minutes for MWAA to apply updates.
-
-#### Step 6: Upload Test DAG (Optional but Recommended)
-
-```bash
-aws s3 cp assets/dags/dr_test_dag.py \
-  s3://$PRIMARY_BUCKET/dags/ \
-  --region us-east-2
-
-aws s3 cp assets/dags/dr_test_dag.py \
-  s3://$SECONDARY_BUCKET/dags/ \
-  --region us-east-1
-```
-
-MWAA automatically detects new DAGs within 30 seconds.
-
-#### Step 7: Verify Plugin is Working
-
-Check Airflow scheduler logs in both regions:
-
-Active region should show:
-```
-INFO - DR State Plugin: Current region us-east-2 is ACTIVE
-INFO - DR State Plugin: Unpausing all DAGs
-```
-
-Standby region should show:
-```
-INFO - DR State Plugin: Current region us-east-1 is STANDBY
-INFO - DR State Plugin: Pausing all DAGs
-```
-
-Check the test DAG in Airflow UI:
-- **Active region**: `dr_test_dag` should be UNPAUSED and running every 10 minutes
-- **Standby region**: `dr_test_dag` should be PAUSED and NOT running
-
-## Failover Procedure
-
-### Manual Failover
-
-To switch from us-east-2 (primary) to us-east-1 (secondary):
-
-```bash
-./scripts/failover_with_dag_control.sh us-east-1 "Planned maintenance"
-```
-
-This will:
-1. Update DynamoDB: active_region = us-east-1 (~1 second)
-2. Pause all DAGs in us-east-2 via Airflow API (~5-10 seconds)
-3. Unpause all DAGs in us-east-1 via Airflow API (~5-10 seconds)
-4. Verify state change
-
-Total time: ~15-20 seconds
-
-### Fallback
-
-To switch back to primary:
-
-```bash
-./scripts/failover_with_dag_control.sh us-east-2 "Returning to primary"
-```
+Wait until both show `AVAILABLE` (takes 20-30 minutes).
 
 ## Testing
 
-### Test 1: Verify Plugin Behavior
+### 1. Verify Initial State
 
-1. Check active region:
-   ```bash
-   aws dynamodb get-item \
-     --table-name mwaa-openlineage-dr-state-dev \
-     --key '{"state_id": {"S": "ACTIVE_REGION"}}' \
-     --region us-east-2 \
-     --query 'Item.active_region.S'
-   ```
-
-2. Open Airflow UI in both regions and verify `dr_test_dag` status:
-   - **Active region**: DAG should be UNPAUSED, runs every 10 minutes
-   - **Standby region**: DAG should be PAUSED, does NOT run
-
-3. Check DAG run logs in active region to confirm execution
-
-### Test 2: Failover
-
-1. Perform failover to secondary:
-   ```bash
-   ./scripts/failover_with_dag_control.sh us-east-1 "Testing failover"
-   ```
-
-2. Wait 30 seconds, then verify DAG status switched:
-   - Old active region (us-east-2): DAGs now PAUSED
-   - New active region (us-east-1): DAGs now UNPAUSED
-
-3. Verify plugin safety net by manually unpausing a DAG in standby region - new runs will still be SKIPPED
-
-## Configuration
-
-### DynamoDB State Table
-
-The state table uses this schema:
-
-```json
-{
-  "state_id": "ACTIVE_REGION",
-  "active_region": "us-east-2",
-  "last_updated": "2024-02-26T10:30:00Z",
-  "failover_count": 0,
-  "version": 1
-}
+Check DynamoDB:
+```bash
+aws dynamodb get-item \
+  --table-name mwaa-openlineage-dr-state-dev \
+  --key '{"state_id": {"S": "ACTIVE_REGION"}}' \
+  --region us-east-2 \
+  --query 'Item.active_region.S'
 ```
 
-### DR Plugin Configuration Parameters
+Should show: `us-east-2`
 
-The DR plugin uses these configuration parameters (set via `airflow_configuration_options`):
+### 2. Check DAG States
 
-- `dr.enabled` - **REQUIRED**: Set to `true` to enable DR plugin
-- `dr.state_table` - DynamoDB table name (default: `mwaa-openlineage-dr-state-dev`)
-- `dr.state_source` - State source: `dynamodb` or `parameter_store` (default: `dynamodb`)
-- `dr.state_table_region` - Region where DynamoDB table is located (default: current region)
+Primary (should be unpaused):
+```bash
+# Access MWAA UI for primary region
+aws mwaa create-web-login-token \
+  --name mwaa-openlineage-dr-primary-dev \
+  --region us-east-2
+```
 
-**Important:** Configuration is set ONCE during MWAA deployment/update. After that, failover happens instantly by updating DynamoDB - no MWAA environment update needed!
+Secondary (should be paused):
+```bash
+# Access MWAA UI for secondary region
+aws mwaa create-web-login-token \
+  --name mwaa-openlineage-dr-secondary-dev \
+  --region us-east-1
+```
 
-## Limitations
+### 3. Test Manual Failover
 
-### Airflow 3.0 Metadata Backup
-Airflow 3.0 removed direct database access, making traditional metadata backup impossible. See `AIRFLOW3_DR_LIMITATIONS.md` for details.
+```bash
+cd scripts
+./failover_with_dag_control.sh us-east-1 "Manual failover test"
+```
 
-**Recommended alternatives:**
-- Use AWS Backup for MWAA environments
-- Use RDS snapshots (if accessible)
-- Maintain DAG code in Git
-- Use Infrastructure as Code (CDK)
+This will:
+1. Update DynamoDB: `active_region = us-east-1`
+2. Pause DAGs in us-east-2
+3. Unpause DAGs in us-east-1
+4. Show summary of actions taken
 
-### Data Replication
-This example does NOT handle:
-- S3 bucket replication (configure separately)
-- Database replication (configure separately)
-- Secrets Manager replication (configure separately)
+### 4. Verify Failover
 
-### Automatic Failover
-This example provides manual failover only. For automatic failover, you need:
-- Health monitoring (CloudWatch, Route53 health checks)
-- Automated decision logic
-- Notification system
+Check DynamoDB again:
+```bash
+aws dynamodb get-item \
+  --table-name mwaa-openlineage-dr-state-dev \
+  --key '{"state_id": {"S": "ACTIVE_REGION"}}' \
+  --region us-east-2
+```
 
-## Cost Considerations
+Should now show: `us-east-1`
 
-Running dual-region MWAA:
-- **MWAA environments**: 2x cost (one per region)
-- **DynamoDB**: Minimal (~$0.43/month for single regional table with low traffic)
-- **Data transfer**: Cross-region reads from DynamoDB (secondary region reads from primary)
-- **S3**: Separate buckets per region
+Check DAG states in both regions - they should be swapped.
 
-**Cost optimization:**
-- Use smaller environment class for standby (mw1.small)
-- Reduce min_workers for standby
-- Consider stopping standby during non-critical periods
+### 5. Failback to Primary
 
-**Note**: This uses a regional DynamoDB table (not Global Table) to minimize costs. The secondary region performs cross-region reads from the primary region's table.
+```bash
+cd scripts
+./failover_with_dag_control.sh us-east-2 "Failback to primary"
+```
+
+## Monitoring
+
+### CloudWatch Logs
+
+Primary MWAA logs:
+```bash
+aws logs tail airflow-mwaa-openlineage-dr-primary-dev-Scheduler \
+  --follow \
+  --region us-east-2
+```
+
+Secondary MWAA logs:
+```bash
+aws logs tail airflow-mwaa-openlineage-dr-secondary-dev-Scheduler \
+  --follow \
+  --region us-east-1
+```
+
+### DynamoDB State
+
+Check current state:
+```bash
+aws dynamodb scan \
+  --table-name mwaa-openlineage-dr-state-dev \
+  --region us-east-2
+```
+
+### MWAA Environment Status
+
+```bash
+# Primary
+aws mwaa get-environment \
+  --name mwaa-openlineage-dr-primary-dev \
+  --region us-east-2 \
+  --query 'Environment.[Status,LastUpdate.Status]'
+
+# Secondary
+aws mwaa get-environment \
+  --name mwaa-openlineage-dr-secondary-dev \
+  --region us-east-1 \
+  --query 'Environment.[Status,LastUpdate.Status]'
+```
+
+## Automated Failover
+
+For automated health monitoring and failover, see the `automated-failover` example:
+
+```bash
+cd ../automated-failover
+```
+
+This adds:
+- Health check Lambda (runs every minute)
+- Automatic failover after 3 consecutive failures
+- SNS notifications
+- Cooldown period to prevent flapping
+
+## Cleanup
+
+### Remove All Resources
+
+```bash
+./cleanup_complete.sh
+```
+
+This will:
+1. Delete MWAA environments (takes 20-30 minutes)
+2. Empty and delete S3 buckets
+3. Delete DynamoDB table
+4. Delete VPCs and network resources
+5. Delete all CDK stacks
+
+### Manual Cleanup
+
+If the script fails, manually delete in this order:
+
+```bash
+# Delete MWAA environments
+cdk destroy MwaaDRMwaaPrimary --region us-east-2
+cdk destroy MwaaDRMwaaSecondary --region us-east-1
+
+# Delete S3 buckets (empty first)
+cdk destroy MwaaDRS3Primary --region us-east-2
+cdk destroy MwaaDRS3Secondary --region us-east-1
+
+# Delete DynamoDB
+cdk destroy MwaaDRStateStack --region us-east-2
+
+# Delete networks
+cdk destroy MwaaDRNetworkPrimary --region us-east-2
+cdk destroy MwaaDRNetworkSecondary --region us-east-1
+```
+
+## Cost Estimate
+
+- **MWAA environments**: ~$300/month each (mw1.small) = $600/month
+- **DynamoDB**: <$1/month
+- **S3**: <$5/month
+- **VPC**: ~$30/month per region = $60/month
+- **Data transfer**: Variable (cross-region)
+
+**Total**: ~$665/month for complete DR setup
 
 ## Troubleshooting
 
-### DAGs Not Pausing/Unpausing
+### MWAA Environment Stuck in UPDATING
+- Check CloudWatch Logs for errors
+- Verify S3 bucket has correct files
+- Check IAM role permissions
 
-1. Verify plugin is installed: `aws s3 ls s3://YOUR-MWAA-BUCKET/plugins/`
-2. Check scheduler logs for plugin messages
-3. Verify IAM permissions for DynamoDB access
-4. Confirm DynamoDB state table is accessible from both regions
+### DAGs Not Appearing
+- Verify files uploaded to S3 `dags/` folder
+- Check DAG processing logs in CloudWatch
+- Ensure no Python syntax errors in DAG files
 
 ### Failover Script Fails
+- Verify AWS CLI credentials
+- Check MWAA environment names are correct
+- Ensure DynamoDB table exists and is accessible
 
-1. Verify AWS credentials have required permissions
-2. Check MWAA API is accessible in both regions
-3. Verify DynamoDB table exists and is accessible
-4. Check network connectivity between regions
+### DAGs Running in Both Regions
+- Check DynamoDB `active_region` value
+- Verify DAG pause states in both MWAA UIs
+- Run failover script again to correct state
+
+## Best Practices
+
+1. **Test regularly**: Run failover drills monthly
+2. **Monitor closely**: Watch CloudWatch Logs and DynamoDB
+3. **Document procedures**: Create runbooks for failover scenarios
+4. **Automate when ready**: Add automated failover after testing manual process
+5. **Plan for data**: Implement S3 replication and database DR separately
+
+## Limitations
+
+See [AIRFLOW3_DR_LIMITATIONS.md](AIRFLOW3_DR_LIMITATIONS.md) for detailed information about:
+- Metadata backup/restore limitations in Airflow 3.0
+- What can and cannot be recovered during failover
+- Workarounds and best practices
 
 ## Next Steps
 
-1. **Choose your deployment path** - See "Deployment Options" section above:
-   - Option 1: Deploy new MWAA with DR built-in (no manual config needed)
-   - Option 2: Add DR to existing MWAA (requires manual config step)
-2. **Verify plugin is working** - Check scheduler logs for "DR state checking ENABLED" message
-3. **Test failover** - Use `./scripts/failover_with_dag_control.sh` to test switching regions
-4. **Implement data replication** - S3 cross-region replication, database replication
-5. **Add monitoring** - CloudWatch alarms, health checks
-6. **Automate failover** - See `../automated-failover/` example
-7. **Test regularly** - Schedule DR drills
-8. **Document runbooks** - Detailed operational procedures
-
-## Related Documentation
-
-- `AIRFLOW3_DR_LIMITATIONS.md` - Airflow 3.0 metadata backup limitations
+1. **Test failover**: Run through the testing steps above
+2. **Add automation**: Deploy the `automated-failover` example
+3. **Implement data DR**: Set up S3 replication, database backups
+4. **Create runbooks**: Document your specific failover procedures
+5. **Train team**: Ensure team knows how to execute failover
 
 ## Support
 
 For issues or questions:
-1. Check `AIRFLOW3_DR_LIMITATIONS.md` for known limitations
-2. Review CloudWatch and Airflow scheduler logs
-3. Verify DynamoDB state table configuration
+1. Check CloudWatch Logs for both MWAA environments
+2. Verify DynamoDB state table contents
+3. Review MWAA environment status in AWS Console
+4. Check S3 buckets have correct files
 
 ## License
 

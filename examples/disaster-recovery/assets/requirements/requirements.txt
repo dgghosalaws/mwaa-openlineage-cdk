@@ -1,0 +1,2 @@
+# Minimal requirements for MWAA DR example
+# No additional packages needed - DR plugin uses only boto3 (built-in)

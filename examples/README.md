@@ -1,123 +1,245 @@
 # MWAA OpenLineage Examples
 
-This directory contains advanced deployment examples for MWAA with OpenLineage integration.
+This directory contains production-ready examples for deploying MWAA with disaster recovery and automated failover capabilities.
 
 ## Available Examples
 
 ### 1. Disaster Recovery (DR)
-**Directory**: `disaster-recovery/`
+**Path**: `disaster-recovery/`
 
-Deploy MWAA across two AWS regions with manual failover capabilities.
+Deploys a complete multi-region MWAA DR setup with:
+- Primary MWAA environment (us-east-2)
+- Secondary MWAA environment (us-east-1)
+- DynamoDB state table for coordination
+- Network infrastructure in both regions
+- S3 buckets for MWAA assets
 
-**Features**:
-- Manual failover with DAG control (pause/unpause)
-- DynamoDB state table for active region tracking
-- DR plugin automatically skips DAG runs in standby region
-- Dual-mechanism protection (plugin + failover script)
-- Cost: ~$0.43/month (DynamoDB only)
+**Key Features:**
+- Cross-region DR architecture
+- Shared state management via DynamoDB
+- Manual failover scripts
+- Test DAG for verification
 
-**Use Case**: Production environments requiring cross-region disaster recovery with controlled failover
-
-**Quick Start**:
-```bash
-cd disaster-recovery
-./deploy_dr_simple.sh
-```
-
-**Documentation**: See `disaster-recovery/README.md`
-
----
+**Documentation:**
+- [Quick Start Guide](disaster-recovery/QUICK_START.md)
+- [Complete README](disaster-recovery/README.md)
+- [Airflow 3 DR Limitations](disaster-recovery/AIRFLOW3_DR_LIMITATIONS.md)
 
 ### 2. Automated Failover
-**Directory**: `automated-failover/`
+**Path**: `automated-failover/`
 
-Add automated health monitoring and failover to your MWAA DR setup.
+Adds automated health monitoring and failover to the DR setup:
+- Health check Lambda (runs every minute)
+- Automated failover Lambda
+- EventBridge rules for scheduling
+- SNS notifications for alerts
+- Cooldown period to prevent flapping
 
-**Features**:
-- Continuous health monitoring (every 1 minute)
+**Key Features:**
+- Continuous health monitoring
 - Automatic failover after 3 consecutive failures
-- Configurable health check criteria (environment status, scheduler heartbeat)
-- Flapping prevention with cooldown period (30 minutes)
-- Email notifications via SNS
-- Cost: ~$1/month
+- DAG pause/unpause automation
+- Email notifications
+- 30-minute cooldown period
 
-**Use Case**: Production environments requiring automated failover without manual intervention
+**Documentation:**
+- [Complete README](automated-failover/README.md)
+- [Scheduler Heartbeat Notes](automated-failover/SCHEDULER_HEARTBEAT_NOTES.md)
 
-**Prerequisites**: Disaster Recovery example must be deployed first
-
-**Quick Start**:
-```bash
-cd automated-failover
-# Edit app.py to configure notification emails
-cdk deploy MwaaAutomatedFailoverStack --region us-east-2
-```
-
-**Documentation**: See `automated-failover/README.md`
-
----
-
-## Example Structure
-
-Each example is self-contained with:
-- `README.md` - Complete documentation
-- `stacks/` - CDK stack definitions
-- `assets/` - Plugins, DAGs, configurations
-- `scripts/` - Deployment and operational scripts
-- `docs/` - Detailed documentation
-
-## Integration with Main Repo
-
-Examples are designed to work with the main MWAA infrastructure:
-
-1. **Deploy main infrastructure first** (Network, Marquez, MWAA)
-2. **Deploy example on top** (adds specific capabilities)
-3. **Examples are optional** (main repo works standalone)
-
-## Prerequisites
-
-All examples require:
-- AWS CLI configured
-- CDK installed and bootstrapped
-- Appropriate AWS permissions
-- Existing MWAA environments (or deploy new ones)
-
-## Contributing
-
-To add a new example:
-1. Create directory: `examples/your-example/`
-2. Include: README, stacks, assets, scripts, docs
-3. Make it self-contained and well-documented
-4. Test thoroughly before committing
-
-## Support
-
-For issues with examples:
-1. Check example-specific documentation
-2. Review troubleshooting sections
-3. Check CloudWatch logs for errors
-
----
-
-## Example Relationships
+## Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Main MWAA Infrastructure                  │
-│              (Network, Marquez, MWAA Environments)          │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ├─► Disaster Recovery (Manual)
-                          │   └─► Automated Failover (Optional)
-                          │
-                          └─► (Future examples)
+│                    DynamoDB State Table                      │
+│                     (us-east-2)                             │
+│                                                             │
+│  - active_region: which region is currently active         │
+│  - health status: consecutive failures tracking            │
+│  - failover history: audit trail                          │
+└──────────────────────┬───────────────────────────────────────┘
+                       │
+        ┌──────────────┴──────────────┐
+        │                             │
+        ▼                             ▼
+┌─────────────────┐           ┌─────────────────┐
+│  Primary Region │           │ Secondary Region│
+│   (us-east-2)   │           │   (us-east-1)   │
+│                 │           │                 │
+│  MWAA Env       │           │  MWAA Env       │
+│  - DAGs         │           │  - DAGs         │
+│  - S3 Bucket    │           │  - S3 Bucket    │
+│  - VPC          │           │  - VPC          │
+└─────────────────┘           └─────────────────┘
+        │                             │
+        └──────────────┬──────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │   Automated Failover System  │
+        │                              │
+        │  - Health Check Lambda       │
+        │  - Failover Lambda           │
+        │  - EventBridge Rules         │
+        │  - SNS Notifications         │
+        └──────────────────────────────┘
 ```
 
-**Deployment Order**:
-1. Main infrastructure (required)
-2. Disaster Recovery (optional, enables cross-region DR)
-3. Automated Failover (optional, requires DR)
+## How DR Works
 
----
+### Without Automated Failover (Manual)
+1. Deploy DR infrastructure in both regions
+2. DynamoDB tracks which region is active
+3. Manually trigger failover when needed
+4. Failover script pauses DAGs in old region, unpauses in new region
 
-**Current Examples**: 2 (Disaster Recovery, Automated Failover)
-**Status**: Production-ready
+### With Automated Failover
+1. Health check Lambda monitors primary MWAA every minute
+2. Checks environment status (must be AVAILABLE)
+3. After 3 consecutive failures, triggers failover Lambda
+4. Failover Lambda:
+   - Updates DynamoDB active_region
+   - Pauses DAGs in failed region
+   - Unpauses DAGs in new active region
+   - Sends SNS notification
+5. 30-minute cooldown prevents rapid failovers
+
+## Key Concepts
+
+### DynamoDB State Table
+- **Single source of truth** for which region is active
+- Stores health check status and failure counts
+- Tracks failover history for audit
+- Used by both health check and failover Lambdas
+
+### DAG Pause/Unpause
+- **Active region**: DAGs are unpaused and run normally
+- **Standby region**: DAGs are paused and don't execute
+- Failover switches which region has unpaused DAGs
+- No DAG code changes required
+- No plugin required
+
+### Why No Plugin?
+Airflow listener plugins cannot prevent DAG execution because:
+- `on_dag_run_running` hook fires AFTER tasks are queued
+- No hook exists that fires before DAG run creation
+- Lambda-based pause/unpause is the correct approach
+
+## Deployment Order
+
+1. **Deploy DR Infrastructure** (disaster-recovery/)
+   ```bash
+   cd disaster-recovery
+   ./deploy_complete.sh
+   ```
+
+2. **Deploy Automated Failover** (automated-failover/)
+   ```bash
+   cd ../automated-failover
+   cdk deploy MwaaAutomatedFailoverStack --region us-east-2
+   ```
+
+3. **Verify Setup**
+   - Check DynamoDB for active_region
+   - Verify DAGs are paused in standby region
+   - Check CloudWatch Logs for health checks
+
+## Testing
+
+### Test Manual Failover
+```bash
+cd disaster-recovery/scripts
+./failover_with_dag_control.sh us-east-1 "Manual test"
+```
+
+### Test Automated Failover
+1. Check CloudWatch Logs for health check Lambda
+2. Verify health checks run every minute
+3. Simulate failure (optional - will trigger real failover)
+4. Verify failover completes and DAGs switch regions
+
+## Monitoring
+
+### CloudWatch Logs
+- Health check: `/aws/lambda/mwaa-openlineage-health-check-dev`
+- Failover: `/aws/lambda/mwaa-openlineage-automated-failover-dev`
+
+### DynamoDB
+```bash
+# Check active region
+aws dynamodb get-item \
+  --table-name mwaa-openlineage-dr-state-dev \
+  --key '{"state_id": {"S": "ACTIVE_REGION"}}' \
+  --region us-east-2
+
+# Check health status
+aws dynamodb get-item \
+  --table-name mwaa-openlineage-dr-state-dev \
+  --key '{"state_id": {"S": "HEALTH_us-east-2"}}' \
+  --region us-east-2
+```
+
+## Cost Considerations
+
+### DR Infrastructure
+- 2 MWAA environments: ~$600/month (mw1.small)
+- DynamoDB: <$1/month
+- S3: <$5/month
+- VPC: ~$30/month per region
+
+### Automated Failover
+- Lambda invocations: ~$0.20/month
+- CloudWatch Logs: ~$0.50/month
+- SNS: ~$0.01/month
+- **Total added cost**: ~$1/month
+
+## Cleanup
+
+### Remove Automated Failover
+```bash
+cd automated-failover
+cdk destroy MwaaAutomatedFailoverStack --region us-east-2
+```
+
+### Remove DR Infrastructure
+```bash
+cd disaster-recovery
+./cleanup_complete.sh
+```
+
+## Best Practices
+
+1. **Test in non-production first** - Verify failover works before production use
+2. **Monitor closely** - Watch CloudWatch Logs and DynamoDB state
+3. **Tune thresholds** - Adjust failure threshold and cooldown based on your needs
+4. **Document runbooks** - Create procedures for handling failover events
+5. **Regular drills** - Test failover periodically to ensure it works
+
+## Troubleshooting
+
+### DAGs Running in Both Regions
+- Check DynamoDB active_region value
+- Verify automated failover Lambda has correct permissions
+- Check if DAGs are actually paused in standby region
+
+### Health Checks Failing
+- Verify MWAA environment status is AVAILABLE
+- Check if environment is idle (missing heartbeat is normal)
+- Review health check Lambda logs for specific errors
+
+### Failover Not Triggering
+- Check consecutive_failures in DynamoDB
+- Verify not in cooldown period
+- Check EventBridge rule is enabled
+- Review health check Lambda permissions
+
+## Support
+
+For issues or questions:
+1. Check CloudWatch Logs for both Lambda functions
+2. Verify DynamoDB state table contents
+3. Review MWAA environment status in both regions
+4. Check SNS topic subscriptions
+
+## License
+
+These examples are provided as-is for demonstration purposes.
