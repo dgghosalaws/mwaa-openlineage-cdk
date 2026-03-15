@@ -22,10 +22,11 @@ This example provides two layers of functionality:
 │                                                      │              │
 │  ┌──────────────────────────────────────┐            │              │
 │  │ Failover Orchestrator (Step Fn)      │            │              │
-│  │  1. Start restore in us-east-1 ──────┼────────────┼──────┐      │
-│  │  2. Poll until complete              │            │      │      │
-│  │  3. Flip region (pause/unpause DAGs) │            │      │      │
-│  │  4. Send SNS notification            │            │      │      │
+│  │  1. Pause DAGs in active region      │            │              │
+│  │  2. Start restore in us-east-1 ──────┼────────────┼──────┐      │
+│  │  3. Poll until complete              │            │      │      │
+│  │  4. Update DDB + unpause target DAGs │            │      │      │
+│  │  5. Send SNS notification            │            │      │      │
 │  └──────────────────────────────────────┘            │      │      │
 │                                                      │      │      │
 │  ┌──────────────────────────────────────┐            │      │      │
@@ -339,10 +340,10 @@ aws stepfunctions start-execution \
 ```
 
 This runs the complete failover sequence (~5-6 minutes):
-1. Starts the restore state machine in the secondary region
-2. Polls every 60 seconds until restore completes
-3. Flips the active region (pause source DAGs, unpause target DAGs)
-4. Updates DynamoDB with new active region
+1. Pauses DAGs in the active (source) region to stop new writes
+2. Starts the restore state machine in the secondary region
+3. Polls every 60 seconds until restore completes
+4. Updates DynamoDB with new active region and unpauses target DAGs
 5. Sends SNS notification
 
 ## Failover Orchestrator — Deep Dive
@@ -358,6 +359,10 @@ EventBridge (every 1 min)
 
 Failover Orchestrator Step Function:
     ┌─────────────────────────────────┐
+    │ PauseActiveDags                 │  Pause DAGs in source region
+    └──────────────┬──────────────────┘
+                   ▼
+    ┌─────────────────────────────────┐
     │ StartCrossRegionRestore         │  Lambda starts restore SM in secondary
     └──────────────┬──────────────────┘
                    ▼
@@ -371,18 +376,22 @@ Failover Orchestrator Step Function:
                    ▼                                         │
     ┌─────────────────────────────────┐     running          │
     │ RestoreComplete?                │──────────────────────┘
-    │   success → FlipActiveRegion    │
+    │   success → ActivateTarget      │
     │   failed  → NotifyRestoreFailed │
     └──────────────┬──────────────────┘
                    ▼ (success)
     ┌─────────────────────────────────┐
-    │ FlipActiveRegion                │  Pause source, unpause target, update DDB
+    │ ActivateTargetRegion            │  Update DDB, unpause target DAGs
     └──────────────┬──────────────────┘
                    ▼
     ┌─────────────────────────────────┐
     │ NotifyFailoverSuccess           │  SNS notification
     └─────────────────────────────────┘
 ```
+
+### Step Functions Execution View
+
+![Failover Orchestrator Step Functions Run](images/failover_orchestrator_run.png)
 
 ### Why Cross-Region Lambdas?
 

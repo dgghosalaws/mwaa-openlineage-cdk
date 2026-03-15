@@ -65,9 +65,10 @@ plus an optional failover orchestrator that chains restore → region flip → n
 │  MWAA Primary ──▶ Export Glue Job ──▶ S3 Backup Bucket          │
 │                                            │                     │
 │  Failover Orchestrator (Step Functions)     │                     │
+│    Pause DAGs in active region             │                     │
 │    Start restore in secondary ─────────────┼──────┐              │
 │    Poll until complete                     │      │              │
-│    Flip region (pause/unpause DAGs)        │      │              │
+│    Update DDB + unpause target DAGs        │      │              │
 │    Send SNS notification                   │      │              │
 │                                            │      │              │
 │  Health Check Lambda (EventBridge)         │      │              │

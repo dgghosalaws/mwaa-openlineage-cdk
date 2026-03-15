@@ -193,13 +193,34 @@ class FailoverOrchestratorStack(Stack):
 
         # ================================================================
         # Step Functions: Failover Orchestrator
-        #   1. Start cross-region restore (Lambda)
-        #   2. Wait → Poll → Choice loop until restore completes
-        #   3. Flip active region
-        #   4. Notify
+        #   1. Pause DAGs in active (source) region
+        #   2. Start cross-region restore (Lambda)
+        #   3. Wait → Poll → Choice loop until restore completes
+        #   4. Activate target region (update DDB + unpause target DAGs)
+        #   5. Notify
         # ================================================================
 
-        # Task 1: Start the restore SM in the secondary region via Lambda
+        # Task 1: Pause DAGs in the source (active) region before restore
+        pause_active_task = tasks.LambdaInvoke(
+            self, "PauseActiveDags",
+            lambda_function=self.flip_fn,
+            payload=sfn.TaskInput.from_object({
+                "mode": "pause_only",
+                "source_env_name": primary_env_name,
+                "source_region": primary_region,
+                "target_env_name": secondary_env_name,
+                "target_region": secondary_region,
+                "reason.$": "$.reason",
+            }),
+            result_path="$.pauseResult",
+            result_selector={
+                "status.$": "$.Payload.status",
+                "source_paused.$": "$.Payload.source_paused",
+                "duration_seconds.$": "$.Payload.duration_seconds",
+            },
+        )
+
+        # Task 2: Start the restore SM in the secondary region via Lambda
         start_restore_task = tasks.LambdaInvoke(
             self, "StartCrossRegionRestore",
             lambda_function=self.start_restore_fn,
@@ -244,11 +265,12 @@ class FailoverOrchestratorStack(Stack):
         # Choice: check poll result
         restore_choice = sfn.Choice(self, "RestoreComplete?")
 
-        # Task: Flip active region
+        # Task: Activate target region (update DDB + unpause target DAGs)
         flip_task = tasks.LambdaInvoke(
-            self, "FlipActiveRegion",
+            self, "ActivateTargetRegion",
             lambda_function=self.flip_fn,
             payload=sfn.TaskInput.from_object({
+                "mode": "activate",
                 "target_env_name": secondary_env_name,
                 "target_region": secondary_region,
                 "source_env_name": primary_env_name,
@@ -258,8 +280,8 @@ class FailoverOrchestratorStack(Stack):
             result_path="$.flipResult",
             result_selector={
                 "status.$": "$.Payload.status",
-                "source_paused.$": "$.Payload.source_paused",
                 "target_unpaused.$": "$.Payload.target_unpaused",
+                "dynamodb_updated.$": "$.Payload.dynamodb_updated",
                 "duration_seconds.$": "$.Payload.duration_seconds",
             },
         )
@@ -293,7 +315,7 @@ class FailoverOrchestratorStack(Stack):
                 "target_region": secondary_region,
                 "reason.$": "$.restoreExec.reason",
                 "detail.$": "$.pollResult.detail",
-                "error": "MetaDB restore state machine failed. Failover aborted.",
+                "error": "MetaDB restore failed. Source DAGs are PAUSED — manual intervention needed to unpause or retry.",
             }),
             result_path=sfn.JsonPath.DISCARD,
         )
@@ -302,13 +324,28 @@ class FailoverOrchestratorStack(Stack):
         notify_flip_failed = tasks.SnsPublish(
             self, "NotifyFlipFailed",
             topic=self.notification_topic,
-            subject="MWAA Failover FAILED - Region Flip Error",
+            subject="MWAA Failover FAILED - Region Activation Error",
             message=sfn.TaskInput.from_object({
                 "status": "FLIP_FAILED",
                 "target_env": secondary_env_name,
                 "target_region": secondary_region,
                 "reason.$": "$.restoreExec.reason",
-                "error": "MetaDB restored but region flip failed. Manual intervention needed.",
+                "error": "MetaDB restored but target activation failed. Source DAGs are PAUSED — manual intervention needed.",
+            }),
+            result_path=sfn.JsonPath.DISCARD,
+        )
+
+        # Notify pause failure
+        notify_pause_failed = tasks.SnsPublish(
+            self, "NotifyPauseFailed",
+            topic=self.notification_topic,
+            subject="MWAA Failover FAILED - Could Not Pause Active DAGs",
+            message=sfn.TaskInput.from_object({
+                "status": "PAUSE_FAILED",
+                "source_env": primary_env_name,
+                "source_region": primary_region,
+                "reason.$": "$.reason",
+                "error": "Failed to pause DAGs in active region. Failover aborted.",
             }),
             result_path=sfn.JsonPath.DISCARD,
         )
@@ -323,12 +360,17 @@ class FailoverOrchestratorStack(Stack):
                 "target_env": secondary_env_name,
                 "target_region": secondary_region,
                 "reason.$": "$.reason",
-                "error": "Failed to start cross-region restore. Failover aborted.",
+                "error": "Failed to start cross-region restore. DAGs in source region are paused — manual intervention needed.",
             }),
             result_path=sfn.JsonPath.DISCARD,
         )
 
         # Error handling
+        pause_active_task.add_catch(
+            notify_pause_failed,
+            errors=["States.ALL"],
+            result_path="$.pauseError",
+        )
         start_restore_task.add_catch(
             notify_start_failed,
             errors=["States.ALL"],
@@ -363,8 +405,8 @@ class FailoverOrchestratorStack(Stack):
         # Loop: wait → poll → choice (choice loops back to wait for "running")
         wait_for_restore.next(poll_restore_task).next(restore_choice)
 
-        # Full chain: start → wait → poll → choice (loop or proceed)
-        definition = start_restore_task.next(wait_for_restore)
+        # Full chain: pause → start restore → wait → poll → choice (loop or proceed)
+        definition = pause_active_task.next(start_restore_task).next(wait_for_restore)
 
         failover_log_group = logs.LogGroup(
             self, "FailoverOrchestratorLogGroup",

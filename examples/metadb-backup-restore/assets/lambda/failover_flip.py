@@ -142,9 +142,18 @@ def update_dynamodb(table_name, target_region, reason):
 
 def handler(event, context):
     """
-    Flip active region: pause source DAGs, unpause target DAGs, update DynamoDB.
+    Failover flip Lambda — supports two modes:
+
+    mode='pause_only':
+      Pauses DAGs in the source (active) region. Called BEFORE restore
+      to stop new DAG runs from writing to the metadb during restore.
+
+    mode='activate' (default):
+      Updates DynamoDB active region and unpauses DAGs in the target region.
+      Called AFTER restore completes.
 
     Input (from Step Functions):
+      - mode: 'pause_only' or 'activate' (default: 'activate')
       - target_env_name: MWAA env to make active
       - target_region: region of target env
       - source_env_name: MWAA env to deactivate
@@ -156,6 +165,7 @@ def handler(event, context):
       - PRIMARY_REGION, SECONDARY_REGION
       - STATE_TABLE_NAME
     """
+    mode = event.get('mode', 'activate')
     target_env = event.get('target_env_name', os.environ.get('TARGET_ENV_NAME', ''))
     target_region = event.get('target_region', os.environ.get('TARGET_REGION', ''))
     source_env = event.get('source_env_name', os.environ.get('SOURCE_ENV_NAME', ''))
@@ -175,31 +185,36 @@ def handler(event, context):
         source_env = source_env or primary_env
         source_region = source_region or primary_region
 
-    print(f"Failover flip: {source_env} ({source_region}) → {target_env} ({target_region})")
     start = time.time()
-
     results = {}
 
-    # Step 1: Update DynamoDB
-    if table_name:
-        results['dynamodb_updated'] = update_dynamodb(table_name, target_region, reason)
+    if mode == 'pause_only':
+        # ── Pause source DAGs only (before restore) ──
+        print(f"Pausing DAGs in source: {source_env} ({source_region})")
+        results['source_paused'] = control_dags(source_env, source_region, pause=True)
+
     else:
-        print("No STATE_TABLE_NAME configured, skipping DynamoDB update")
-        results['dynamodb_updated'] = None
+        # ── Activate target (after restore) ──
+        print(f"Activating target: {target_env} ({target_region})")
 
-    # Step 2: Pause source DAGs
-    results['source_paused'] = control_dags(source_env, source_region, pause=True)
+        # Update DynamoDB
+        if table_name:
+            results['dynamodb_updated'] = update_dynamodb(table_name, target_region, reason)
+        else:
+            print("No STATE_TABLE_NAME configured, skipping DynamoDB update")
+            results['dynamodb_updated'] = None
 
-    # Step 3: Unpause target DAGs
-    results['target_unpaused'] = control_dags(target_env, target_region, pause=False)
+        # Unpause target DAGs
+        results['target_unpaused'] = control_dags(target_env, target_region, pause=False)
 
     duration = time.time() - start
     results['duration_seconds'] = round(duration, 1)
 
-    print(f"Failover flip complete in {duration:.1f}s")
+    print(f"Failover flip ({mode}) complete in {duration:.1f}s")
 
     return {
         'status': 'success',
+        'mode': mode,
         'target_env_name': target_env,
         'target_region': target_region,
         'source_env_name': source_env,
