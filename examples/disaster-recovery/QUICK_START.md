@@ -7,7 +7,7 @@ foundational two-region setup that the `metadb-backup-restore` example builds on
 
 - Two MWAA environments (primary in us-east-2, secondary in us-east-1)
 - VPC, subnets, and security groups in both regions
-- S3 buckets for MWAA assets (DAGs, plugins, requirements) in both regions
+- S3 buckets for MWAA assets (DAGs) in both regions
 - Test DAG for verification
 
 ## Prerequisites
@@ -60,7 +60,7 @@ Total deployment time: ~40-50 minutes.
 
 ### Step 4: Upload Assets to S3
 
-After stacks are deployed, upload DAGs and requirements to both S3 buckets:
+After stacks are deployed, upload the test DAG to both S3 buckets:
 
 ```bash
 # Get bucket names from CloudFormation outputs
@@ -76,13 +76,9 @@ SECONDARY_BUCKET=$(aws cloudformation describe-stacks \
 
 # Upload to primary
 aws s3 cp assets/dags/dr_test_dag.py s3://$PRIMARY_BUCKET/dags/ --region us-east-2
-aws s3 cp assets/requirements/requirements.txt s3://$PRIMARY_BUCKET/ --region us-east-2
-aws s3 cp assets/plugins/plugins.zip s3://$PRIMARY_BUCKET/ --region us-east-2
 
 # Upload to secondary
 aws s3 cp assets/dags/dr_test_dag.py s3://$SECONDARY_BUCKET/dags/ --region us-east-1
-aws s3 cp assets/requirements/requirements.txt s3://$SECONDARY_BUCKET/ --region us-east-1
-aws s3 cp assets/plugins/plugins.zip s3://$SECONDARY_BUCKET/ --region us-east-1
 ```
 
 ## Verify

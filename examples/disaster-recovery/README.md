@@ -8,7 +8,7 @@ and automated failover orchestration.
 ## What This Example Provides
 
 - VPC, subnets, and security groups in both regions
-- S3 buckets for MWAA assets (DAGs, plugins, requirements) in both regions
+- S3 buckets for MWAA assets (DAGs) in both regions
 - Two MWAA environments (primary + secondary) running Airflow 3.0.6
 - Test DAG for verification
 
@@ -27,8 +27,6 @@ and automated failover orchestration.
 │  ┌────────────────────────┐  │     │  ┌────────────────────────┐  │
 │  │ S3 Bucket              │  │     │  │ S3 Bucket              │  │
 │  │  dags/                 │  │     │  │  dags/                 │  │
-│  │  plugins.zip           │  │     │  │  plugins.zip           │  │
-│  │  requirements.txt      │  │     │  │  requirements.txt      │  │
 │  └────────────────────────┘  │     │  └────────────────────────┘  │
 │                              │     │                              │
 │  ┌────────────────────────┐  │     │  ┌────────────────────────┐  │
@@ -82,7 +80,7 @@ ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 npx cdk deploy --all -c account=$ACCOUNT --require-approval never
 ```
 
-After CDK deploys, upload assets (DAGs, plugins, requirements) to both S3 buckets.
+After CDK deploys, upload the test DAG to both S3 buckets.
 See QUICK_START.md Step 4 for details.
 
 ## Verification
@@ -131,5 +129,4 @@ Total: ~$670/month
 ## Related Documentation
 
 - [Quick Start Guide](QUICK_START.md)
-- [Airflow 3.0 DR Limitations](AIRFLOW3_DR_LIMITATIONS.md)
 - [MetaDB Backup/Restore Example](../metadb-backup-restore/README.md)

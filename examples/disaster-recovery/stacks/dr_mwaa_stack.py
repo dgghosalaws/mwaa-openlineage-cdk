@@ -131,7 +131,7 @@ class DRMwaaStack(Stack):
         private_subnet_ids = [subnet.subnet_id for subnet in vpc.private_subnets]
 
         # MWAA Environment
-        # Note: S3 bucket must already have DAGs and requirements uploaded
+        # Note: S3 bucket must already have DAGs uploaded
         self.mwaa_environment = mwaa.CfnEnvironment(
             self,
             "MwaaEnvironment",
@@ -143,8 +143,6 @@ class DRMwaaStack(Stack):
             execution_role_arn=mwaa_role.role_arn,
             source_bucket_arn=mwaa_bucket.bucket_arn,
             dag_s3_path="dags",
-            requirements_s3_path="requirements.txt",
-            plugins_s3_path="plugins.zip",
             network_configuration=mwaa.CfnEnvironment.NetworkConfigurationProperty(
                 security_group_ids=[mwaa_sg.security_group_id],
                 subnet_ids=private_subnet_ids,

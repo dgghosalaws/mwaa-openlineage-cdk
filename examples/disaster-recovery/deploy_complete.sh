@@ -8,7 +8,7 @@ echo ""
 echo "This script deploys multi-region MWAA infrastructure:"
 echo "  - Network infrastructure (VPC, subnets, security groups)"
 echo "  - S3 buckets for MWAA assets"
-echo "  - Upload DAGs, plugins, and requirements to S3"
+echo "  - Upload test DAG to S3"
 echo "  - MWAA environments in primary (us-east-2) and secondary (us-east-1)"
 echo "  - Test DAG for verification"
 echo ""
@@ -63,8 +63,6 @@ PRIMARY_BUCKET=$(aws cloudformation describe-stacks \
 
 echo "Primary bucket: $PRIMARY_BUCKET"
 aws s3 cp assets/dags/dr_test_dag.py s3://$PRIMARY_BUCKET/dags/ --region us-east-2
-aws s3 cp assets/requirements/requirements.txt s3://$PRIMARY_BUCKET/ --region us-east-2
-aws s3 cp assets/plugins/plugins.zip s3://$PRIMARY_BUCKET/ --region us-east-2
 
 echo ""
 echo "=========================================="
@@ -103,8 +101,6 @@ SECONDARY_BUCKET=$(aws cloudformation describe-stacks \
 
 echo "Secondary bucket: $SECONDARY_BUCKET"
 aws s3 cp assets/dags/dr_test_dag.py s3://$SECONDARY_BUCKET/dags/ --region us-east-1
-aws s3 cp assets/requirements/requirements.txt s3://$SECONDARY_BUCKET/ --region us-east-1
-aws s3 cp assets/plugins/plugins.zip s3://$SECONDARY_BUCKET/ --region us-east-1
 
 echo ""
 echo "=========================================="
