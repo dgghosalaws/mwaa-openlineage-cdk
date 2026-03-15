@@ -1,45 +1,89 @@
 # MWAA DR - Quick Start Guide
 
-Complete MWAA disaster recovery setup in ~50 minutes with a single command.
+Deploy multi-region MWAA infrastructure in ~50 minutes. This creates the
+foundational two-region setup that the `metadb-backup-restore` example builds on.
 
 ## What You Get
 
-- ✅ Two MWAA environments (primary in us-east-2, secondary in us-east-1)
-- ✅ Network infrastructure (VPC, subnets, security groups) in both regions
-- ✅ DynamoDB state table for DR coordination
-- ✅ DR plugin enabled from deployment (no manual configuration)
-- ✅ Test DAG for immediate verification
-- ✅ Failover scripts ready to use
+- Two MWAA environments (primary in us-east-2, secondary in us-east-1)
+- VPC, subnets, and security groups in both regions
+- S3 buckets for MWAA assets (DAGs, plugins, requirements) in both regions
+- Test DAG for verification
 
 ## Prerequisites
 
 ```bash
 # Required
-- AWS CLI configured
-- Python 3.8+
-- Node.js 14+
-- AWS CDK: npm install -g aws-cdk
+- AWS CLI configured with appropriate permissions
+- Python 3.9+
+- Node.js 18+
+- AWS CDK v2: npm install -g aws-cdk
 
-# Check your setup
+# Verify
 aws sts get-caller-identity
 python3 --version
 node --version
 cdk --version
 ```
 
-## Deploy (Single Command)
+## Deploy
+
+### Step 1: Install Dependencies
 
 ```bash
 cd examples/disaster-recovery
-chmod +x deploy_complete.sh
-./deploy_complete.sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Deployment time: ~50-60 minutes
-- Network stacks: ~5 minutes each
-- DynamoDB: ~2 minutes
-- MWAA primary: ~25 minutes
-- MWAA secondary: ~25 minutes
+### Step 2: Bootstrap CDK (if not already done)
+
+```bash
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+npx cdk bootstrap aws://$ACCOUNT/us-east-2
+npx cdk bootstrap aws://$ACCOUNT/us-east-1
+```
+
+### Step 3: Deploy All Stacks
+
+```bash
+npx cdk deploy --all -c account=$ACCOUNT --require-approval never
+```
+
+This deploys 6 stacks:
+- `MwaaDRNetworkPrimary` / `MwaaDRNetworkSecondary` — VPC + networking (~5 min each)
+- `MwaaDRS3Primary` / `MwaaDRS3Secondary` — S3 buckets (~2 min each)
+- `MwaaDRMwaaPrimary` / `MwaaDRMwaaSecondary` — MWAA environments (~25 min each)
+
+Total deployment time: ~40-50 minutes.
+
+### Step 4: Upload Assets to S3
+
+After stacks are deployed, upload DAGs and requirements to both S3 buckets:
+
+```bash
+# Get bucket names from CloudFormation outputs
+PRIMARY_BUCKET=$(aws cloudformation describe-stacks \
+  --stack-name MwaaDRS3Primary --region us-east-2 \
+  --query 'Stacks[0].Outputs[?OutputKey==`MwaaBucketName`].OutputValue' \
+  --output text)
+
+SECONDARY_BUCKET=$(aws cloudformation describe-stacks \
+  --stack-name MwaaDRS3Secondary --region us-east-1 \
+  --query 'Stacks[0].Outputs[?OutputKey==`MwaaBucketName`].OutputValue' \
+  --output text)
+
+# Upload to primary
+aws s3 cp assets/dags/dr_test_dag.py s3://$PRIMARY_BUCKET/dags/ --region us-east-2
+aws s3 cp assets/requirements/requirements.txt s3://$PRIMARY_BUCKET/ --region us-east-2
+aws s3 cp assets/plugins/plugins.zip s3://$PRIMARY_BUCKET/ --region us-east-2
+
+# Upload to secondary
+aws s3 cp assets/dags/dr_test_dag.py s3://$SECONDARY_BUCKET/dags/ --region us-east-1
+aws s3 cp assets/requirements/requirements.txt s3://$SECONDARY_BUCKET/ --region us-east-1
+aws s3 cp assets/plugins/plugins.zip s3://$SECONDARY_BUCKET/ --region us-east-1
+```
 
 ## Verify
 
@@ -61,177 +105,67 @@ aws mwaa get-environment \
 
 Both should return `"AVAILABLE"`.
 
-### 2. Check DR Plugin Logs
-
-Open Airflow UI → Admin → Logs → Scheduler Logs
-
-**Primary (us-east-2):**
-```
-INFO - DR state checking ENABLED (DynamoDB)
-INFO - table: mwaa-openlineage-dr-state-dev
-INFO - table_region: us-east-2, current_region: us-east-2
-```
-
-**Secondary (us-east-1):**
-```
-INFO - DR state checking ENABLED (DynamoDB)
-INFO - table_region: us-east-2, current_region: us-east-1
-INFO - Skipping DAG run dr_test_dag - not active region
-```
-
-### 3. Check Test DAG
-
-Open Airflow UI → DAGs → `dr_test_dag`
-
-- **Primary**: DAG runs every 10 minutes, shows SUCCESS
-- **Secondary**: DAG runs are SKIPPED
-
-### 4. Check DR State
+### 2. Access Airflow UI
 
 ```bash
-aws dynamodb get-item \
-  --table-name mwaa-openlineage-dr-state-dev \
-  --key '{"state_id": {"S": "ACTIVE_REGION"}}' \
-  --region us-east-2 \
-  --query 'Item.active_region.S'
+# Primary
+aws mwaa create-web-login-token \
+  --name mwaa-openlineage-dr-primary-dev \
+  --region us-east-2
+
+# Secondary
+aws mwaa create-web-login-token \
+  --name mwaa-openlineage-dr-secondary-dev \
+  --region us-east-1
 ```
 
-Should return `"us-east-2"`.
+Open the returned URL in your browser. You should see the `dr_test_dag` in the DAG list.
 
-## Test Failover
+### 3. Run Test DAG
 
-```bash
-# Switch to secondary region
-./scripts/failover_with_dag_control.sh us-east-1 "Testing failover"
+Trigger `dr_test_dag` in either region to verify the environment is working.
 
-# Wait 30 seconds, then verify
-aws dynamodb get-item \
-  --table-name mwaa-openlineage-dr-state-dev \
-  --key '{"state_id": {"S": "ACTIVE_REGION"}}' \
-  --region us-east-2 \
-  --query 'Item.active_region.S'
-```
+## CDK Stacks
 
-Should now return `"us-east-1"`.
-
-Check Airflow UI:
-- **us-east-1**: DAGs now running
-- **us-east-2**: DAG runs now SKIPPED
+| Stack | Region | Description |
+|-------|--------|-------------|
+| `MwaaDRNetworkPrimary` | us-east-2 | VPC, subnets, security groups |
+| `MwaaDRNetworkSecondary` | us-east-1 | VPC, subnets, security groups |
+| `MwaaDRS3Primary` | us-east-2 | S3 bucket for MWAA assets |
+| `MwaaDRS3Secondary` | us-east-1 | S3 bucket for MWAA assets |
+| `MwaaDRMwaaPrimary` | us-east-2 | MWAA environment (Airflow 3.0.6) |
+| `MwaaDRMwaaSecondary` | us-east-1 | MWAA environment (Airflow 3.0.6) |
 
 ## Cleanup
 
 ```bash
-chmod +x cleanup_complete.sh
-./cleanup_complete.sh
+# Destroy all stacks (MWAA deletion takes ~20-30 minutes)
+npx cdk destroy --all -c account=$ACCOUNT --require-approval never
 ```
 
-Cleanup time: ~20-30 minutes
-
-## Troubleshooting
-
-### MWAA Environment Not Available
-
+If CDK destroy fails on S3 buckets (non-empty), empty them first:
 ```bash
-# Check status
-aws mwaa get-environment \
-  --name mwaa-openlineage-dr-primary-dev \
-  --region us-east-2
-
-# Check CloudFormation stack
-aws cloudformation describe-stacks \
-  --stack-name MwaaDRMwaaPrimary \
-  --region us-east-2
-```
-
-### DR Plugin Not Working
-
-1. Check plugin is uploaded:
-```bash
-aws s3 ls s3://mwaa-openlineage-dr-primary-dev-ACCOUNT/plugins/
-```
-
-2. Check MWAA configuration:
-```bash
-aws mwaa get-environment \
-  --name mwaa-openlineage-dr-primary-dev \
-  --region us-east-2 \
-  --query 'Environment.AirflowConfigurationOptions'
-```
-
-Should show:
-```json
-{
-  "dr.enabled": "true",
-  "dr.state_table": "mwaa-openlineage-dr-state-dev",
-  "dr.state_table_region": "us-east-2"
-}
-```
-
-### Failover Script Fails
-
-1. Check DynamoDB table exists:
-```bash
-aws dynamodb describe-table \
-  --table-name mwaa-openlineage-dr-state-dev \
-  --region us-east-2
-```
-
-2. Check IAM permissions for MWAA role to read DynamoDB
-
-3. Check network connectivity between regions
-
-## Next Steps
-
-1. **Add your DAGs** - Upload to S3 buckets in both regions
-2. **Configure data replication** - S3 cross-region replication, database replication
-3. **Set up monitoring** - CloudWatch alarms, health checks
-4. **Automate failover** - See `../automated-failover/` example
-5. **Test regularly** - Schedule DR drills
-
-## Architecture
-
-```
-Primary (us-east-2)          Secondary (us-east-1)
-┌─────────────────┐          ┌─────────────────┐
-│  MWAA Primary   │          │ MWAA Secondary  │
-│  + DR Plugin    │          │  + DR Plugin    │
-│                 │          │                 │
-│  If active:     │          │  If active:     │
-│  ✓ DAGs run     │          │  ✓ DAGs run     │
-│                 │          │                 │
-│  If standby:    │          │  If standby:    │
-│  ✗ Runs SKIPPED │          │  ✗ Runs SKIPPED │
-└────────┬────────┘          └────────┬────────┘
-         │                            │
-         └────────────┬───────────────┘
-                      │
-              ┌───────▼────────┐
-              │   DynamoDB     │
-              │  State Table   │
-              │  (us-east-2)   │
-              │                │
-              │  active_region │
-              │  = us-east-2   │
-              └────────────────┘
+aws s3 rm s3://$PRIMARY_BUCKET --recursive --region us-east-2
+aws s3 rm s3://$SECONDARY_BUCKET --recursive --region us-east-1
 ```
 
 ## Cost Estimate
 
-- **MWAA**: 2 x mw1.small = ~$600/month
-- **NAT Gateways**: 2 x $32/month = $64/month
-- **DynamoDB**: ~$0.43/month
-- **S3**: Minimal (< $5/month)
-- **Data Transfer**: Cross-region reads (minimal)
+| Resource | Cost |
+|----------|------|
+| MWAA (2 x mw1.small) | ~$600/month |
+| NAT Gateways (2 regions) | ~$64/month |
+| S3 | < $5/month |
+| VPC | Minimal |
 
-**Total**: ~$670/month
+Total: ~$670/month
 
-Reduce costs:
-- Use mw1.micro for standby
-- Reduce min_workers for standby
-- Stop standby during non-critical periods
+Tip: reduce costs by using `mw1.micro` or stopping the secondary environment
+when not actively testing DR.
 
-## Support
+## Next Steps
 
-- Full documentation: `README.md`
-- Airflow 3.0 limitations: `AIRFLOW3_DR_LIMITATIONS.md`
-- Automated failover: `../automated-failover/README.md`
+1. Deploy the [metadb-backup-restore](../metadb-backup-restore/) example for
+   metadata backup/restore and automated failover orchestration
+2. Add your own DAGs to both S3 buckets
+3. Set up S3 cross-region replication for DAG synchronization
