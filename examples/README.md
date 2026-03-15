@@ -33,8 +33,9 @@ plus an optional failover orchestrator that chains restore → region flip → n
 - Lambda functions for Glue connection management
 - Airflow DAGs for triggering export/restore from within MWAA
 
-**Failover orchestrator (optional, deploy with `-c failover=true`):**
-- Failover Orchestrator Step Function with cross-region restore + region flip
+**Failover/Fallback orchestrators (optional, deploy with `-c failover=true`):**
+- Failover Orchestrator Step Function: pause primary → cross-region restore into secondary → activate secondary
+- Fallback Orchestrator Step Function: pause secondary → restore into primary → activate primary
 - Health check Lambda + EventBridge schedule (disabled by default)
 - Failover flip Lambda with CLI token auto-refresh
 - DynamoDB state table for active region tracking
@@ -43,7 +44,8 @@ plus an optional failover orchestrator that chains restore → region flip → n
 **Key Features:**
 - Works with both Airflow 2.x and 3.x
 - Cross-region metadb restore via Glue JDBC
-- Automated failover with restore → flip → notify pipeline
+- Bidirectional failover/fallback with restore → flip → notify pipeline
+- DAGs are paused before restore to ensure data consistency
 - Designed for planned failover simulations (not full regional outages)
 - EventBridge health check deploys disabled by default for safety
 
@@ -65,14 +67,21 @@ plus an optional failover orchestrator that chains restore → region flip → n
 │  MWAA Primary ──▶ Export Glue Job ──▶ S3 Backup Bucket          │
 │                                            │                     │
 │  Failover Orchestrator (Step Functions)     │                     │
-│    Pause DAGs in active region             │                     │
+│    Pause DAGs in primary                   │                     │
 │    Start restore in secondary ─────────────┼──────┐              │
 │    Poll until complete                     │      │              │
-│    Update DDB + unpause target DAGs        │      │              │
+│    Update DDB + unpause secondary DAGs     │      │              │
+│    Send SNS notification                   │      │              │
+│                                            │      │              │
+│  Fallback Orchestrator (Step Functions)     │      │              │
+│    Pause DAGs in secondary                 │      │              │
+│    Start restore in primary                │      │              │
+│    Poll until complete                     │      │              │
+│    Update DDB + unpause primary DAGs       │      │              │
 │    Send SNS notification                   │      │              │
 │                                            │      │              │
 │  Health Check Lambda (EventBridge)         │      │              │
-│    Monitors MWAA → triggers orchestrator   │      │              │
+│    Monitors MWAA → triggers failover       │      │              │
 └────────────────────────────────────────────┼──────┼──────────────┘
                                              │      │
                                              ▼      ▼
@@ -81,6 +90,8 @@ plus an optional failover orchestrator that chains restore → region flip → n
 │                                                                  │
 │  MWAA Secondary ◀── Restore Glue Job ◀── Auto-Restore SM        │
 │                                           (Step Functions)       │
+│  MWAA Secondary ──▶ Export Glue Job ──▶ S3 Backup Bucket        │
+│                                          (for fallback)          │
 └──────────────────────────────────────────────────────────────────┘
 ```
 

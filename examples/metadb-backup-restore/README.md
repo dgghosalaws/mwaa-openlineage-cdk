@@ -1,14 +1,14 @@
 # MWAA MetaDB Backup/Restore with Failover Orchestration
 
 Backup and restore MWAA metadata database (PostgreSQL) across regions using AWS Glue,
-with optional automated failover orchestration via Step Functions.
+with automated failover and fallback orchestration via Step Functions.
 
 ## Overview
 
 This example provides two layers of functionality:
 
 1. **Base Infrastructure** — Per-region backup/restore using Glue jobs, Step Functions, and S3
-2. **Failover Orchestrator** — Cross-region automated failover that chains MetaDB restore → region flip → notification
+2. **Failover/Fallback Orchestrators** — Cross-region automated failover (primary → secondary) and fallback (secondary → primary), each chaining: pause DAGs → MetaDB restore → activate target → notify
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -22,21 +22,38 @@ This example provides two layers of functionality:
 │                                                      │              │
 │  ┌──────────────────────────────────────┐            │              │
 │  │ Failover Orchestrator (Step Fn)      │            │              │
-│  │  1. Pause DAGs in active region      │            │              │
-│  │  2. Start restore in us-east-1 ──────┼────────────┼──────┐      │
+│  │  primary → secondary                 │            │              │
+│  │  1. Pause DAGs in primary     ───────┼────────────┼──────┐      │
+│  │  2. Start restore in secondary       │            │      │      │
 │  │  3. Poll until complete              │            │      │      │
-│  │  4. Update DDB + unpause target DAGs │            │      │      │
+│  │  4. Activate secondary (DDB+unpause) │            │      │      │
 │  │  5. Send SNS notification            │            │      │      │
 │  └──────────────────────────────────────┘            │      │      │
 │                                                      │      │      │
 │  ┌──────────────────────────────────────┐            │      │      │
-│  │ Health Check Lambda (EventBridge)    │            │      │      │
-│  │  → monitors primary MWAA status      │            │      │      │
-│  │  → triggers orchestrator on failure  │            │      │      │
-│  └──────────────────────────────────────┘            │      │      │
-└──────────────────────────────────────────────────────┼──────┼──────┘
-                                                       │      │
-                                                       ▼      ▼
+│  │ Fallback Orchestrator (Step Fn)      │            │      │      │
+│  │  secondary → primary                 │            │      │      │
+│  │  1. Pause DAGs in secondary   ───────┼──────┐     │      │      │
+│  │  2. Start restore in primary         │      │     │      │      │
+│  │  3. Poll until complete              │      │     │      │      │
+│  │  4. Activate primary (DDB+unpause)   │      │     │      │      │
+│  │  5. Send SNS notification            │      │     │      │      │
+│  └──────────────────────────────────────┘      │     │      │      │
+│                                                │     │      │      │
+│  ┌──────────────────────────────────────┐      │     │      │      │
+│  │ Health Check Lambda (EventBridge)    │      │     │      │      │
+│  │  → monitors primary MWAA status      │      │     │      │      │
+│  │  → triggers failover on failure      │      │     │      │      │
+│  └──────────────────────────────────────┘      │     │      │      │
+│                                                │     │      │      │
+│  ┌──────────────────────────────────────┐      │     │      │      │
+│  │ DynamoDB: mwaa-failover-state        │      │     │      │      │
+│  │  → tracks active region              │      │     │      │      │
+│  │  → failover count + cooldown         │      │     │      │      │
+│  └──────────────────────────────────────┘      │     │      │      │
+└────────────────────────────────────────────────┼─────┼──────┼──────┘
+                                                 │     │      │
+                                                 ▼     ▼      ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │                      Secondary Region (us-east-1)                    │
 │                                                                      │
@@ -52,19 +69,17 @@ This example provides two layers of functionality:
 ## Important: Planned Failover Only
 
 > **This failover orchestrator is designed for planned failover simulations and
-> MWAA-level failures — not full regional outages.** The health check Lambda,
-> EventBridge rule, Step Functions, and DynamoDB state table all run in the
-> primary region. If that region goes down entirely, none of these components
-> will execute.
+> MWAA-level failures — not full regional outages.** All orchestration components
+> (Step Functions, Lambdas, DynamoDB, EventBridge) run in the primary region.
+> If that region goes down entirely, none of these will execute.
 >
-> For true cross-region disaster recovery where the primary region is completely
-> unavailable, you should trigger the failover manually from the secondary region
-> or use a multi-region orchestration pattern (e.g., Route 53 health checks with
-> a failover Lambda deployed in the secondary region).
+> For true cross-region DR where the primary is completely unavailable, trigger
+> the restore manually from the secondary region or use a multi-region pattern
+> (e.g., Route 53 health checks with a failover Lambda in the secondary region).
 >
 > This solution is well-suited for:
 > - **Planned failover drills** — validate your DR process end-to-end
-> - **MWAA environment failures** — scheduler crashes, environment stuck in UPDATING, etc.
+> - **MWAA environment failures** — scheduler crashes, environment stuck in UPDATING
 > - **Maintenance windows** — gracefully move workloads to the secondary region
 > - **Partial service degradation** — MWAA is unhealthy but the region's control plane is up
 
@@ -78,7 +93,7 @@ metadb-backup-restore/
 ├── requirements.txt                # Python dependencies
 ├── stacks/
 │   ├── metadb_backup_restore_stack.py   # Base backup/restore infrastructure
-│   └── failover_orchestrator_stack.py   # Failover orchestrator (optional)
+│   └── failover_orchestrator_stack.py   # Failover + fallback orchestrators
 └── assets/
     ├── dags/
     │   ├── glue_mwaa_export.py     # Airflow DAG: export metadb to S3
@@ -145,7 +160,7 @@ aws s3 cp assets/dags/glue_mwaa_export.py    s3://<SECONDARY_MWAA_DAG_BUCKET>/da
 aws s3 cp assets/dags/glue_mwaa_restore.py   s3://<SECONDARY_MWAA_DAG_BUCKET>/dags/ --region us-east-1
 ```
 
-The MWAA DAG bucket name is in the MWAA console under Environment details → DAGs folder.
+Find the MWAA DAG bucket name in the MWAA console under Environment details → DAGs folder.
 
 ### Step 3: Configure MWAA Airflow Configuration Options
 
@@ -255,8 +270,8 @@ npx cdk deploy FailoverOrchestrator \
 This deploys to the primary region only:
 - Failover Orchestrator Step Function (primary → secondary)
 - Fallback Orchestrator Step Function (secondary → primary)
-- Health Check Lambda + EventBridge rule (1-minute schedule)
-- Failover Flip Lambda
+- Health Check Lambda + EventBridge rule (1-minute schedule, disabled by default)
+- Failover Flip Lambda (pause/unpause DAGs, update DynamoDB)
 - Cross-region restore bridge Lambdas (start + poll)
 - DynamoDB state table
 - SNS notification topic
@@ -296,29 +311,26 @@ aws events disable-rule \
   --region <REGION>
 ```
 
+---
+
 ## Usage
 
-### Manual Export (Airflow UI)
+### Manual Export
 
-Trigger DAG `glue_mwaa_export` — no config needed. Exports to:
-`s3://<backup-bucket>/exports/<env-name>/YYYY/MM/DD/`
+Trigger the export DAG from the Airflow UI or CLI:
 
-### Manual Restore (Airflow UI)
-
-Trigger DAG `glue_mwaa_restore` with config:
-```json
-{
-    "backup_path": "s3://mwaa-metadb-backups-<account>-<region>/exports/<env-name>/YYYY/MM/DD",
-    "restore_mode": "append",
-    "tables": ["variable", "connection", "slot_pool", "dag_run", "task_instance"]
-}
+```bash
+# Via Airflow UI: trigger glue_mwaa_export DAG
+# Via CLI (from MWAA console):
+aws mwaa create-cli-token --name <ENV_NAME> --region <REGION>
+# Then POST to the webserver: dags trigger glue_mwaa_export
 ```
 
-- `backup_path`: S3 path to backup (required)
-- `restore_mode`: `append` (default) or `clean` (truncate before restore)
-- `tables`: list of tables (optional, defaults to all)
+Exports land in: `s3://mwaa-metadb-backups-<ACCOUNT>-<REGION>/exports/<ENV_NAME>/YYYY/MM/DD/`
 
-### Automated Restore (Step Functions)
+### Manual Restore (Same Region)
+
+Start the auto-restore Step Function from the AWS console:
 
 ```bash
 aws stepfunctions start-execution \
@@ -327,194 +339,207 @@ aws stepfunctions start-execution \
   --region <REGION>
 ```
 
-This runs: FindLatestBackup → StartGlueRestore → MonitorGlueJob → ValidateRestore → Notify.
+The Step Function will: find the latest backup → trigger the restore DAG → monitor the Glue job → validate.
 
-### Manual Failover (Step Functions)
+### Manual Failover (Primary → Secondary)
 
-Trigger the full failover orchestrator manually:
-
-```bash
-aws stepfunctions start-execution \
-  --state-machine-arn arn:aws:states:<REGION>:<ACCOUNT>:stateMachine:mwaa-failover-orchestrator-<REGION> \
-  --input '{"reason": "Manual failover test"}' \
-  --region <REGION>
-```
-
-This runs the complete failover sequence (~5-6 minutes):
-1. Pauses DAGs in the active (source) region to stop new writes
-2. Starts the restore state machine in the secondary region
-3. Polls every 60 seconds until restore completes
-4. Updates DynamoDB with new active region and unpauses target DAGs
-5. Sends SNS notification
-
-### Manual Fallback to Primary (Step Functions)
-
-After a failover, you can return workloads to the primary region using the
-fallback orchestrator. This mirrors the failover flow but in reverse:
+Start the failover orchestrator from the AWS console or CLI:
 
 ```bash
 aws stepfunctions start-execution \
-  --state-machine-arn arn:aws:states:<REGION>:<ACCOUNT>:stateMachine:mwaa-fallback-orchestrator-<REGION> \
-  --input '{"reason": "Returning to primary after maintenance"}' \
-  --region <REGION>
+  --state-machine-arn arn:aws:states:<PRIMARY_REGION>:<ACCOUNT>:stateMachine:mwaa-failover-orchestrator-<PRIMARY_REGION> \
+  --input '{"reason": "Planned failover drill"}' \
+  --region <PRIMARY_REGION>
 ```
 
-The fallback sequence (~5-6 minutes):
-1. Pauses DAGs in the secondary (currently active) region
-2. Starts the restore state machine in the primary region
-3. Polls every 60 seconds until restore completes
-4. Updates DynamoDB with primary as active region and unpauses primary DAGs
-5. Sends SNS notification
+The orchestrator will:
+1. Pause all DAGs in the primary region (excluding `glue_mwaa_*` and `dr_*` DAGs)
+2. Start the auto-restore Step Function in the secondary region
+3. Poll every 60 seconds until the restore completes
+4. Activate the secondary region: update DynamoDB + unpause DAGs in secondary
+5. Send an SNS notification
 
-> **Note:** Before running fallback, ensure the secondary region has a recent
-> export so the primary gets up-to-date metadata. Run `glue_mwaa_export` on
-> the secondary MWAA environment first if needed.
+### Manual Fallback (Secondary → Primary)
+
+After a failover, return traffic to the primary region:
+
+```bash
+aws stepfunctions start-execution \
+  --state-machine-arn arn:aws:states:<PRIMARY_REGION>:<ACCOUNT>:stateMachine:mwaa-fallback-orchestrator-<PRIMARY_REGION> \
+  --input '{"reason": "Returning to primary after drill"}' \
+  --region <PRIMARY_REGION>
+```
+
+The fallback orchestrator mirrors the failover flow in reverse:
+1. Pause all DAGs in the secondary region
+2. Start the auto-restore Step Function in the primary region (restores secondary's latest export into primary)
+3. Poll until complete
+4. Activate the primary region: update DynamoDB + unpause DAGs in primary
+5. Send an SNS notification
+
+> **Important:** For fallback to work, the secondary region must have at least one
+> export. Run `glue_mwaa_export` in the secondary environment before attempting fallback.
+
+---
 
 ## Failover Orchestrator — Deep Dive
 
-### Architecture
-
-```
-EventBridge (every 1 min)
-    → Health Check Lambda
-        → checks MWAA env status + scheduler heartbeat
-        → tracks consecutive failures in DynamoDB
-        → on threshold breach (default: 3): starts Failover Orchestrator
-
-Failover Orchestrator Step Function:
-    ┌─────────────────────────────────┐
-    │ PauseActiveDags                 │  Pause DAGs in source region
-    └──────────────┬──────────────────┘
-                   ▼
-    ┌─────────────────────────────────┐
-    │ StartCrossRegionRestore         │  Lambda starts restore SM in secondary
-    └──────────────┬──────────────────┘
-                   ▼
-    ┌─────────────────────────────────┐
-    │ WaitForRestore (60s)            │◀─────────────────────┐
-    └──────────────┬──────────────────┘                      │
-                   ▼                                         │
-    ┌─────────────────────────────────┐                      │
-    │ PollCrossRegionRestore          │  Lambda checks SM status
-    └──────────────┬──────────────────┘                      │
-                   ▼                                         │
-    ┌─────────────────────────────────┐     running          │
-    │ RestoreComplete?                │──────────────────────┘
-    │   success → ActivateTarget      │
-    │   failed  → NotifyRestoreFailed │
-    └──────────────┬──────────────────┘
-                   ▼ (success)
-    ┌─────────────────────────────────┐
-    │ ActivateTargetRegion            │  Update DDB, unpause target DAGs
-    └──────────────┬──────────────────┘
-                   ▼
-    ┌─────────────────────────────────┐
-    │ NotifyFailoverSuccess           │  SNS notification
-    └─────────────────────────────────┘
-```
-
-### Step Functions Execution View
-
-![Failover Orchestrator Step Functions Run](images/failover_orchestrator_run.png)
-
 ### Why Cross-Region Lambdas?
 
-AWS Step Functions cannot natively start executions in a different region. The
-`StepFunctionsStartExecution` task only works within the same region. To bridge
-this, two lightweight Lambdas handle cross-region communication:
-
-- `start_cross_region_restore.py` — calls `stepfunctions.start_execution()` via boto3
-  with an explicit `region_name` parameter
-- `poll_cross_region_restore.py` — calls `stepfunctions.describe_execution()` to check
-  status, returning `running`, `success`, or `failed`
-
-The orchestrator loops (wait 60s → poll → check) until the restore completes.
+Step Functions cannot natively start a state machine in another region. The
+`start_cross_region_restore` Lambda bridges this gap by using a boto3 client
+pointed at the target region to call `start_execution`. Similarly,
+`poll_cross_region_restore` uses `describe_execution` against the remote region.
 
 ### CLI Token Refresh
 
-The flip Lambda uses a `TokenManager` class that automatically refreshes MWAA CLI
-tokens before the 60-second expiry. This prevents failures when iterating over many
-DAGs during pause/unpause operations.
+MWAA CLI tokens expire after 60 seconds. The `failover_flip` Lambda uses a
+`TokenManager` class that automatically refreshes the token before each CLI call
+if more than 50 seconds have elapsed. This is critical when pausing/unpausing
+many DAGs sequentially.
 
 ### DynamoDB State Table
 
-Table name: `mwaa-failover-state-<region>`
+The `mwaa-failover-state-<REGION>` table tracks:
 
-| state_id | Description |
-|----------|-------------|
-| `ACTIVE_REGION` | Current active region, failover count, last failover time, cooldown tracking |
-| `HEALTH_<region>` | Health status, consecutive failure count, last check timestamp |
+| Field | Description |
+|-------|-------------|
+| `state_id` | Always `ACTIVE_REGION` (partition key) |
+| `active_region` | Currently active region (e.g., `us-east-2`) |
+| `failover_count` | Total number of failovers performed |
+| `last_failover_time` | ISO timestamp of last failover |
+| `failover_reason` | Reason string from the orchestrator input |
+| `version` | Optimistic locking counter |
 
 ### Health Check Behavior
 
-The health check Lambda:
-1. Skips if in cooldown period (default: 30 minutes after last failover)
-2. Skips if primary is not the active region (avoids double-failover)
-3. Checks MWAA environment status (`AVAILABLE` = healthy)
-4. Logs scheduler heartbeat warnings (does not fail on heartbeat alone)
-5. Tracks consecutive failures in DynamoDB
-6. Sends warning SNS notifications as failures approach threshold
-7. Starts the orchestrator when threshold is reached
+The health check Lambda (triggered by EventBridge every minute when enabled):
+
+1. Calls `airflow:GetEnvironment` on the primary MWAA environment
+2. If status is not `AVAILABLE`, increments a failure counter in DynamoDB
+3. After `FAILURE_THRESHOLD` consecutive failures (default: 3), starts the failover orchestrator
+4. Respects a `COOLDOWN_MINUTES` window (default: 30) to prevent repeated failovers
+5. Publishes health status to SNS on state changes
+
+The EventBridge rule deploys **disabled by default**. Enable it only after testing.
 
 ### Configuration Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `health_check_interval` | `rate(1 minute)` | How often to check primary health |
+| `health_check_interval` | `rate(1 minute)` | EventBridge schedule expression |
 | `failure_threshold` | `3` | Consecutive failures before triggering failover |
-| `cooldown_minutes` | `30` | Cooldown period after a failover (prevents flapping) |
-| `notification_email` | `""` | Email for SNS notifications (optional) |
+| `cooldown_minutes` | `30` | Minimum time between automated failovers |
+| `notification_email` | (none) | Email for SNS subscription (optional) |
 
-These are set in `app.py` when instantiating `FailoverOrchestratorStack`.
+---
 
-## How It Works (Technical Details)
+## How It Works
 
 ### Export Process
-1. DAG runs inside MWAA, reads DB credentials from environment variables
-2. Creates a Glue JDBC connection with real credentials and MWAA VPC config
-3. Updates the Glue job to attach the connection (places Glue ENIs in MWAA VPC)
-4. Glue job reads tables via Spark JDBC, writes pipe-delimited CSV to S3
+
+1. The `glue_mwaa_export` DAG runs in Airflow
+2. It creates a Glue JDBC connection to the MWAA PostgreSQL metadb
+3. The Glue job (`mwaa_metadb_export.py`) reads key tables via JDBC and writes CSV files to S3
+4. Exports are partitioned by date: `exports/<env>/YYYY/MM/DD/`
 
 ### Restore Process
-1. Glue job reads CSV from S3
-2. Connects to target MWAA metadb via pg8000 (pure Python PostgreSQL driver)
-3. Restores using PostgreSQL `COPY FROM STDIN` for performance
-4. Writes restore summary to the local region's backup bucket
+
+1. The auto-restore Step Function finds the latest backup in S3
+2. It triggers the `glue_mwaa_restore` DAG via MWAA CLI
+3. The DAG starts a Glue job (`mwaa_metadb_restore.py`) that:
+   - Reads CSV files from S3
+   - Connects to the target MWAA metadb via pg8000 (pure Python PostgreSQL driver)
+   - Cleans float-formatted integers from Spark (e.g., `1.0` → `1`)
+   - Restores data using `INSERT ... ON CONFLICT DO UPDATE` (upsert)
+   - Writes a restore summary to the local region's backup bucket
+4. The monitor Lambda checks the Glue job status directly (not the DAG status)
+5. The validate Lambda confirms the restore completed
 
 ### Airflow Compatibility
-Works with both Airflow 2.x (`SQL_ALCHEMY_CONN`) and Airflow 3.x (`DB_SECRETS`/`POSTGRES_HOST`).
+
+- The restore DAG uses a **fire-and-forget** pattern: it starts the Glue job and returns immediately
+- This avoids Celery executor timeouts (Airflow kills tasks that run too long)
+- The DAG will show as "failed" in the Airflow UI — this is expected behavior
+- Actual restore status is tracked by the monitor Lambda watching the Glue job
+
+---
+
+## Design Decisions
+
+### Why `glue_mwaa_*` DAGs Are Excluded from Pause/Unpause
+
+The `failover_flip` Lambda excludes DAGs matching `glue_mwaa_*` when pausing or
+unpausing. These are the export and restore DAGs themselves — pausing them would
+prevent the restore from running during failover.
+
+### Why Latest Glue Run Is Safe
+
+The monitor Lambda simply checks the latest Glue job run (no time-based filtering).
+This is safe because DAGs are always paused before the restore starts, so there are
+no competing Glue runs. The latest run is always the one triggered by the orchestrator.
+
+---
 
 ## CDK Stacks Reference
 
-| Stack | Region | Description |
-|-------|--------|-------------|
-| `MetaDBBackupRestorePrimary` | Primary | Export/restore infrastructure for primary |
-| `MetaDBBackupRestoreSecondary` | Secondary | Export/restore infrastructure for secondary |
-| `FailoverOrchestrator` | Primary | Failover + fallback orchestration (deploy with `-c failover=true`) |
+| Stack | Region | Resources |
+|-------|--------|-----------|
+| `MetaDBBackupRestorePrimary` | Primary (us-east-2) | S3 bucket, Glue role, Glue jobs, auto-restore Step Function, Lambdas |
+| `MetaDBBackupRestoreSecondary` | Secondary (us-east-1) | S3 bucket, Glue role, Glue jobs, auto-restore Step Function, Lambdas |
+| `FailoverOrchestrator` | Primary (us-east-2) | Failover SM, Fallback SM, Health Check Lambda, EventBridge rule, DynamoDB table, SNS topic, Flip Lambda, Cross-region bridge Lambdas |
 
-The `FailoverOrchestrator` stack includes both:
-- `mwaa-failover-orchestrator-<region>` — primary → secondary failover
-- `mwaa-fallback-orchestrator-<region>` — secondary → primary fallback
+Deploy base stacks:
+```bash
+npx cdk deploy MetaDBBackupRestorePrimary MetaDBBackupRestoreSecondary \
+  -c account=<ACCOUNT_ID> --require-approval never
+```
+
+Deploy orchestrator (optional):
+```bash
+npx cdk deploy FailoverOrchestrator \
+  -c failover=true -c account=<ACCOUNT_ID> --require-approval never
+```
+
+---
 
 ## Troubleshooting
 
-### "No backups found" error in orchestrator
-Run an export first from the primary MWAA environment. The restore SM looks for
-backups in `s3://mwaa-metadb-backups-<account>-<primary-region>/exports/<env-name>/`.
+### No backups found
 
-### Restore DAG shows "failed" in Airflow UI but Glue job succeeded
-This is expected. The restore DAG uses a fire-and-forget pattern — it starts the Glue
-job and returns. The Celery executor may time out the task before the response comes back.
-The Step Functions monitor Lambda checks the Glue job directly, so the orchestrator
-correctly detects success regardless of the DAG status.
+The auto-restore Step Function fails at the "FindLatestBackup" step.
 
-### Health check triggering failover unexpectedly
-The EventBridge rule deploys disabled by default. If you've enabled it and it's
-triggering unexpectedly, disable it:
-```bash
-aws events disable-rule --name mwaa-failover-health-check-<REGION> --region <REGION>
-```
+- Verify exports exist: `aws s3 ls s3://mwaa-metadb-backups-<ACCOUNT>-<SOURCE_REGION>/exports/`
+- Run `glue_mwaa_export` in the source environment first
+- Check that the `source_env_name` and `source_region` are configured correctly in the stack
+
+### Restore DAG shows "failed" in Airflow UI
+
+This is expected. The restore DAG uses fire-and-forget: it starts the Glue job and
+exits immediately. Airflow marks it as failed because the task doesn't wait for
+completion. Check the actual Glue job status in the AWS Glue console.
+
+### Health check triggers unexpected failover
+
+- Disable the EventBridge rule: `aws events disable-rule --name mwaa-failover-health-check-<REGION>`
+- Check the DynamoDB table for the `consecutive_failures` counter
+- Increase `failure_threshold` or `cooldown_minutes` if needed
+- Review CloudWatch logs for the health check Lambda
 
 ### Cross-region restore fails with AccessDenied
-Ensure the Glue role in the target region has `CrossRegionBackupAccess` policy
-(see Step 5 above).
+
+The Glue role in the target region needs `CrossRegionBackupAccess` policy to read
+from the source region's S3 bucket. See [Step 5](#step-5-add-cross-region-s3-access-to-glue-roles).
+
+### Fallback fails — no export in secondary
+
+Fallback restores the secondary's latest export into the primary. If the secondary
+has never run an export, there's nothing to restore. Run `glue_mwaa_export` in the
+secondary environment before attempting fallback.
+
+### Glue job fails with connection error
+
+- Verify the MWAA environment is in `AVAILABLE` state
+- Check that the Glue role has the correct VPC/subnet/security group permissions
+- Ensure the MWAA Airflow configuration options are set (see [Step 3](#step-3-configure-mwaa-airflow-configuration-options))
+- Check Glue job logs in CloudWatch: `/aws-glue/jobs/error`
