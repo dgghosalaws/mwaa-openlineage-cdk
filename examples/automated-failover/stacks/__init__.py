@@ -1,1 +1,0 @@
-# MWAA Automated Failover Stacks
