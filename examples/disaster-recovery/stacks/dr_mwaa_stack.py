@@ -1,5 +1,5 @@
 """
-DR MWAA Stack - Minimal MWAA with DR Plugin
+DR MWAA Stack - Multi-Region MWAA Environment
 """
 from aws_cdk import (
     Stack,
@@ -7,14 +7,13 @@ from aws_cdk import (
     aws_s3 as s3,
     aws_iam as iam,
     aws_mwaa as mwaa,
-    aws_dynamodb as dynamodb,
     CfnOutput,
 )
 from constructs import Construct
 
 
 class DRMwaaStack(Stack):
-    """Creates minimal MWAA environment with DR plugin"""
+    """Creates MWAA environment for DR setup"""
 
     def __init__(
         self,
@@ -23,7 +22,6 @@ class DRMwaaStack(Stack):
         vpc: ec2.Vpc,
         mwaa_sg: ec2.SecurityGroup,
         mwaa_bucket: s3.IBucket,
-        dr_state_table: dynamodb.Table,
         project_name: str,
         env_name: str,
         region_name: str,
@@ -48,9 +46,6 @@ class DRMwaaStack(Stack):
 
         # Grant S3 permissions
         mwaa_bucket.grant_read_write(mwaa_role)
-
-        # Grant DynamoDB read permissions for DR state
-        dr_state_table.grant_read_data(mwaa_role)
 
         # Additional permissions for MWAA
         mwaa_role.add_to_policy(
@@ -135,10 +130,8 @@ class DRMwaaStack(Stack):
         )
         private_subnet_ids = [subnet.subnet_id for subnet in vpc.private_subnets]
 
-        # MWAA Environment with DR configuration
+        # MWAA Environment
         # Note: S3 bucket must already have DAGs and requirements uploaded
-        # DR is managed by automated failover Lambda (pauses/unpauses DAGs)
-        # Using MWAA's default AWS-managed encryption
         self.mwaa_environment = mwaa.CfnEnvironment(
             self,
             "MwaaEnvironment",
@@ -181,10 +174,6 @@ class DRMwaaStack(Stack):
             airflow_configuration_options={
                 "core.load_default_connections": "false",
                 "core.load_examples": "false",
-                # DR Configuration - accessible via Airflow Variables
-                "dr.state_table": dr_state_table.table_name,
-                "dr.table_region": primary_region,
-                "dr.current_region": region_name,
             },
             webserver_access_mode="PUBLIC_ONLY",
             weekly_maintenance_window_start="SUN:03:00",

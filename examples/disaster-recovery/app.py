@@ -2,11 +2,10 @@
 """
 MWAA DR Example - Complete CDK App
 
-This app deploys a complete MWAA DR setup:
+This app deploys a multi-region MWAA setup:
 - Network infrastructure in both regions
 - S3 buckets for MWAA assets in both regions
-- DynamoDB state table in primary region
-- Minimal MWAA environments in both regions with DR plugin enabled
+- MWAA environments in both regions
 - Test DAG for verification
 
 Deployment order:
@@ -15,7 +14,6 @@ Deployment order:
 3. Deploy MWAA environments
 """
 import aws_cdk as cdk
-from stacks.mwaa_dr_state_stack import MwaaDRStateStack
 from stacks.dr_network_stack import DRNetworkStack
 from stacks.dr_s3_stack import DRS3Stack
 from stacks.dr_mwaa_stack import DRMwaaStack
@@ -56,16 +54,6 @@ primary_s3 = DRS3Stack(
     description="MWAA DR S3 Bucket - Primary Region (us-east-2)"
 )
 
-# DynamoDB State Table - Primary Region Only
-dr_state = MwaaDRStateStack(
-    app,
-    "MwaaDRStateStack",
-    project_name=PROJECT_NAME,
-    env_name=ENV_NAME,
-    env=cdk.Environment(account=account, region=PRIMARY_REGION),
-    description="MWAA DR State Management - DynamoDB table for active region tracking"
-)
-
 # MWAA Stack - Primary
 # Note: Requires assets to be uploaded to S3 first
 primary_mwaa = DRMwaaStack(
@@ -74,7 +62,6 @@ primary_mwaa = DRMwaaStack(
     vpc=primary_network.vpc,
     mwaa_sg=primary_network.mwaa_sg,
     mwaa_bucket=primary_s3.mwaa_bucket,
-    dr_state_table=dr_state.dr_state_table,
     project_name=PROJECT_NAME,
     env_name=ENV_NAME,
     region_name="primary",
@@ -87,7 +74,6 @@ primary_mwaa = DRMwaaStack(
 )
 primary_mwaa.add_dependency(primary_network)
 primary_mwaa.add_dependency(primary_s3)
-primary_mwaa.add_dependency(dr_state)
 
 # ============================================================================
 # SECONDARY REGION (us-east-1)
@@ -122,11 +108,10 @@ secondary_mwaa = DRMwaaStack(
     vpc=secondary_network.vpc,
     mwaa_sg=secondary_network.mwaa_sg,
     mwaa_bucket=secondary_s3.mwaa_bucket,
-    dr_state_table=dr_state.dr_state_table,
     project_name=PROJECT_NAME,
     env_name=ENV_NAME,
     region_name="secondary",
-    primary_region=PRIMARY_REGION,  # Both regions read from primary
+    primary_region=PRIMARY_REGION,
     environment_class="mw1.small",
     min_workers=1,
     max_workers=2,
@@ -135,6 +120,5 @@ secondary_mwaa = DRMwaaStack(
 )
 secondary_mwaa.add_dependency(secondary_network)
 secondary_mwaa.add_dependency(secondary_s3)
-secondary_mwaa.add_dependency(dr_state)
 
 app.synth()

@@ -7,15 +7,14 @@ Production-ready examples for deploying MWAA with disaster recovery and failover
 ### 1. Disaster Recovery (DR)
 **Path**: `disaster-recovery/`
 
-Deploys a complete multi-region MWAA DR setup:
-- Primary MWAA environment (us-east-2)
-- Secondary MWAA environment (us-east-1)
-- DynamoDB state table for coordination
-- Network infrastructure in both regions
-- S3 buckets for MWAA assets
+Deploys a multi-region MWAA setup:
+- VPC + networking in both regions
+- S3 buckets for MWAA assets in both regions
+- Two MWAA environments (primary + secondary)
+- Test DAG for verification
 
-Use this to set up the foundational two-region MWAA infrastructure that the
-backup/restore example builds on.
+This is the foundational infrastructure. Deploy this first, then layer on
+backup/restore and failover orchestration from the second example.
 
 **Documentation:**
 - [Quick Start Guide](disaster-recovery/QUICK_START.md)
