@@ -127,6 +127,38 @@ def read_backup(bucket, s3_key):
     return gzip.decompress(resp['Body'].read()).decode('utf-8')
 
 
+def clean_float_integers(csv_data):
+    """Fix Spark JDBC float-formatted integers (e.g. '19.0' → '19').
+    
+    Spark writes nullable integer columns as floats in CSV output.
+    PostgreSQL COPY rejects '19.0' for integer columns, so we strip
+    the '.0' suffix from any value that looks like a whole number float.
+    """
+    lines = csv_data.split('\n')
+    if not lines:
+        return csv_data
+    header = lines[0]
+    cleaned = [header]
+    for line in lines[1:]:
+        if not line.strip():
+            cleaned.append(line)
+            continue
+        fields = line.split('|')
+        fixed = []
+        for f in fields:
+            # Convert '19.0' → '19' but leave '3.14', empty strings, and text alone
+            if f and f.replace('-', '', 1).replace('.', '', 1).isdigit() and '.' in f:
+                try:
+                    fval = float(f)
+                    if fval == int(fval):
+                        f = str(int(fval))
+                except (ValueError, OverflowError):
+                    pass
+            fixed.append(f)
+        cleaned.append('|'.join(fixed))
+    return '\n'.join(cleaned)
+
+
 def restore_table_copy(conn, table_name, csv_data, columns=None):
     """Restore using PostgreSQL COPY FROM STDIN (pipe-delimited).
     
@@ -135,6 +167,9 @@ def restore_table_copy(conn, table_name, csv_data, columns=None):
     """
     cursor = conn.cursor()
     try:
+        # Fix Spark JDBC float-formatted integers before COPY
+        csv_data = clean_float_integers(csv_data)
+
         if restore_mode == 'clean':
             print(f"  Truncating {table_name}...")
             cursor.execute(f"TRUNCATE TABLE {table_name} CASCADE")
@@ -176,6 +211,8 @@ def restore_table_insert(conn, table_name, csv_data, columns=None):
     """Fallback: row-by-row INSERT if COPY fails."""
     cursor = conn.cursor()
     try:
+        # Fix float-formatted integers for INSERT path too
+        csv_data = clean_float_integers(csv_data)
         reader = csv.reader(StringIO(csv_data), delimiter='|')
         header = next(reader)
         cols = columns or header
