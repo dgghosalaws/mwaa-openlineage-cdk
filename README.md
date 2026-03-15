@@ -15,7 +15,7 @@
 > **Key improvements in this version:**
 > - ✅ Native OpenLineage provider (no custom plugins needed)
 > - ✅ Airflow 3.0.6 compatibility with latest features
-> - ✅ Enhanced disaster recovery with dual-mechanism DAG control
+> - ✅ Multi-region disaster recovery with metadata backup/restore
 > - ✅ Multiple deployment modes (Standard, Blue-Green, HA, Full HA)
 > - ✅ Production-ready with comprehensive documentation and examples
 
@@ -27,7 +27,7 @@ This CDK project creates a complete, production-ready MWAA environment with Open
 - ✅ **Automated deployment** with AWS CDK
 - ✅ **Marquez** for lineage visualization
 - ✅ **Four deployment modes**: Standard, Blue-Green MWAA, HA Marquez, Full HA
-- ✅ **Disaster Recovery** with automated failover and fallback
+- ✅ **Disaster Recovery** with multi-region MWAA, metadata backup/restore, and failover orchestration
 - ✅ **Production-ready** with security best practices
 - ✅ **Zero-downtime switching** for Blue-Green deployments
 - ✅ **Comprehensive documentation** with troubleshooting guides
@@ -52,15 +52,13 @@ See **[DEPLOYMENT_MODES.md](DEPLOYMENT_MODES.md)** for detailed comparison and s
 
 Looking for advanced deployment patterns? Check out the **[examples/](examples/)** directory:
 
-### Disaster Recovery (DR)
-Deploy MWAA across two AWS regions with automatic DAG control based on active region.
+### Disaster Recovery
+Multi-region MWAA with metadata backup/restore and automated failover orchestration.
 
-- **Features**: DynamoDB state management, automatic DAG pause/unpause, manual failover scripts
-- **Cost**: ~$716/month (dual-region MWAA + minimal DynamoDB)
-- **Use case**: Production environments requiring cross-region disaster recovery
-- **Note**: Metadata backup/restore not included (Airflow 3.0 limitation - use AWS Backup instead)
+- **[disaster-recovery/](examples/disaster-recovery/)** — Foundational two-region MWAA infrastructure (VPC, S3, MWAA in both regions)
+- **[metadb-backup-restore/](examples/metadb-backup-restore/)** — MetaDB backup/restore via Glue, plus failover orchestrator (Step Functions) with health check, region flip, and SNS notifications
 
-See **[examples/disaster-recovery/README.md](examples/disaster-recovery/README.md)** for complete documentation and deployment instructions.
+See **[examples/README.md](examples/README.md)** for deployment order and architecture overview.
 
 ## 🚀 Quick Start
 
@@ -288,56 +286,27 @@ See **[FULL_HA_GUIDE.md](FULL_HA_GUIDE.md)** for complete HA deployment guide.
 
 ## 🔄 Disaster Recovery (Optional)
 
-This project includes comprehensive disaster recovery capabilities with automated failover and fallback between two AWS regions.
+Multi-region MWAA disaster recovery is available as self-contained examples in the
+[examples/](examples/) directory. The DR solution is split into two layers:
 
-### DR Features
+1. **[disaster-recovery/](examples/disaster-recovery/)** — Deploys foundational multi-region
+   MWAA infrastructure (VPC, S3, MWAA environments in us-east-2 and us-east-1)
 
-- ✅ **Bidirectional Failover**: Automatic failover when primary region fails
-- ✅ **Automated Fallback**: Automatic fallback when primary region recovers
-- ✅ **State Management**: DynamoDB Global Table tracks active region
-- ✅ **Metadata Sync**: Continuous backup with 5-minute RPO
-- ✅ **Health Monitoring**: Continuous health checks of both regions
-- ✅ **Zero Data Loss**: For committed DAG runs
+2. **[metadb-backup-restore/](examples/metadb-backup-restore/)** — Adds metadata database
+   backup/restore via AWS Glue, plus an optional failover orchestrator that chains
+   cross-region restore → region flip → SNS notification
 
-### DR Configuration
+### Key Capabilities
 
-Enable DR in `cdk.json`:
+- Cross-region MetaDB export/restore using Glue JDBC
+- Automated failover orchestration via Step Functions
+- Health check Lambda with EventBridge schedule (disabled by default)
+- DynamoDB state tracking for active region
+- Works with both Airflow 2.x and 3.x
+- Designed for planned failover simulations
 
-```json
-{
-  "context": {
-    "enable_dr": true,
-    "dr_config": {
-      "primary_region": "us-east-1",
-      "secondary_region": "us-west-2",
-      "backup_schedule": "rate(5 minutes)",
-      "health_check_interval": "rate(1 minute)",
-      "health_check_threshold": 3,
-      "fallback_cooldown_minutes": 30,
-      "notification_emails": ["ops-team@example.com"]
-    }
-  }
-}
-```
-
-### Deploy DR Infrastructure
-
-```bash
-# Deploy DR to both regions
-./deploy_dr.sh
-
-# Test failover
-./test_dr_failover.sh
-```
-
-### DR Metrics
-
-- **RPO (Recovery Point Objective)**: < 5 minutes
-- **RTO (Recovery Time Objective)**: < 10 minutes
-- **Failover Time**: 5-8 minutes
-- **Fallback Time**: 5-8 minutes
-
-See **[DR_WITH_FALLBACK.md](DR_WITH_FALLBACK.md)** for complete DR guide including architecture, testing, and troubleshooting.
+See **[examples/README.md](examples/README.md)** for deployment order, architecture diagram,
+and complete documentation.
 
 ---
 
@@ -355,7 +324,7 @@ See **[DR_WITH_FALLBACK.md](DR_WITH_FALLBACK.md)** for complete DR guide includi
 - **[ACCESSING_MARQUEZ.md](ACCESSING_MARQUEZ.md)** - Accessing Marquez in private subnet
 - **[MONITORING.md](MONITORING.md)** - CloudWatch monitoring and metrics
 - **[PERFORMANCE_TESTING.md](PERFORMANCE_TESTING.md)** - Capacity testing and validation
-- **[DR_WITH_FALLBACK.md](DR_WITH_FALLBACK.md)** - Disaster recovery with automated failover and fallback
+- **[examples/README.md](examples/README.md)** - Disaster recovery examples and architecture
 
 ### Policies & Guidelines
 - **[SECURITY.md](SECURITY.md)** - Security policy and best practices
