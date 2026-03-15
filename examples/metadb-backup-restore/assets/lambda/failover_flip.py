@@ -66,14 +66,14 @@ def run_cli(token_mgr, cmd):
 
 
 def get_dag_ids(token_mgr):
-    """Get list of DAG IDs, excluding internal/DR DAGs."""
+    """Get list of DAG IDs, excluding internal/DR/metadb DAGs."""
     stdout, _ = run_cli(token_mgr, 'dags list -o json')
     dag_ids = []
     try:
         dags = json.loads(stdout)
         for d in dags:
             dag_id = d.get('dag_id', '')
-            if dag_id and not dag_id.startswith('dr_'):
+            if dag_id and not dag_id.startswith('dr_') and not dag_id.startswith('glue_mwaa_'):
                 dag_ids.append(dag_id)
     except (json.JSONDecodeError, TypeError):
         # Fallback: parse table output
@@ -82,7 +82,7 @@ def get_dag_ids(token_mgr):
                 parts = line.split()
                 if parts:
                     dag_id = parts[0]
-                    if not dag_id.startswith('dr_'):
+                    if not dag_id.startswith('dr_') and not dag_id.startswith('glue_mwaa_'):
                         dag_ids.append(dag_id)
     return dag_ids
 

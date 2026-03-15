@@ -253,7 +253,8 @@ npx cdk deploy FailoverOrchestrator \
 ```
 
 This deploys to the primary region only:
-- Failover Orchestrator Step Function
+- Failover Orchestrator Step Function (primary → secondary)
+- Fallback Orchestrator Step Function (secondary → primary)
 - Health Check Lambda + EventBridge rule (1-minute schedule)
 - Failover Flip Lambda
 - Cross-region restore bridge Lambdas (start + poll)
@@ -345,6 +346,29 @@ This runs the complete failover sequence (~5-6 minutes):
 3. Polls every 60 seconds until restore completes
 4. Updates DynamoDB with new active region and unpauses target DAGs
 5. Sends SNS notification
+
+### Manual Fallback to Primary (Step Functions)
+
+After a failover, you can return workloads to the primary region using the
+fallback orchestrator. This mirrors the failover flow but in reverse:
+
+```bash
+aws stepfunctions start-execution \
+  --state-machine-arn arn:aws:states:<REGION>:<ACCOUNT>:stateMachine:mwaa-fallback-orchestrator-<REGION> \
+  --input '{"reason": "Returning to primary after maintenance"}' \
+  --region <REGION>
+```
+
+The fallback sequence (~5-6 minutes):
+1. Pauses DAGs in the secondary (currently active) region
+2. Starts the restore state machine in the primary region
+3. Polls every 60 seconds until restore completes
+4. Updates DynamoDB with primary as active region and unpauses primary DAGs
+5. Sends SNS notification
+
+> **Note:** Before running fallback, ensure the secondary region has a recent
+> export so the primary gets up-to-date metadata. Run `glue_mwaa_export` on
+> the secondary MWAA environment first if needed.
 
 ## Failover Orchestrator — Deep Dive
 
@@ -466,7 +490,11 @@ Works with both Airflow 2.x (`SQL_ALCHEMY_CONN`) and Airflow 3.x (`DB_SECRETS`/`
 |-------|--------|-------------|
 | `MetaDBBackupRestorePrimary` | Primary | Export/restore infrastructure for primary |
 | `MetaDBBackupRestoreSecondary` | Secondary | Export/restore infrastructure for secondary |
-| `FailoverOrchestrator` | Primary | Failover orchestration (deploy with `-c failover=true`) |
+| `FailoverOrchestrator` | Primary | Failover + fallback orchestration (deploy with `-c failover=true`) |
+
+The `FailoverOrchestrator` stack includes both:
+- `mwaa-failover-orchestrator-<region>` — primary → secondary failover
+- `mwaa-fallback-orchestrator-<region>` — secondary → primary fallback
 
 ## Troubleshooting
 

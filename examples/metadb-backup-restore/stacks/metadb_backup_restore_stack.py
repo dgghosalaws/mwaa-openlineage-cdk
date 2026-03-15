@@ -405,6 +405,7 @@ class MetaDBBackupRestoreStack(Stack):
             result_selector={
                 "status.$": "$.Payload.status",
                 "dag_run_id.$": "$.Payload.dag_run_id",
+                "glue_run_id.$": "$.Payload.glue_run_id",
                 "detail.$": "$.Payload.detail",
             },
         )

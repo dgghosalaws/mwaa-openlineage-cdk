@@ -51,6 +51,7 @@ class FailoverOrchestratorStack(Stack):
         secondary_env_name: str,
         secondary_region: str,
         restore_state_machine_arn: str,
+        primary_restore_state_machine_arn: str = "",
         notification_email: str = "",
         health_check_interval: str = "rate(1 minute)",
         failure_threshold: int = 3,
@@ -138,7 +139,9 @@ class FailoverOrchestratorStack(Stack):
         )
         start_restore_role.add_to_policy(iam.PolicyStatement(
             actions=["states:StartExecution"],
-            resources=[restore_state_machine_arn],
+            resources=[
+                r for r in [restore_state_machine_arn, primary_restore_state_machine_arn] if r
+            ],
         ))
 
         self.start_restore_fn = _lambda.Function(
@@ -171,10 +174,14 @@ class FailoverOrchestratorStack(Stack):
         poll_restore_role.add_to_policy(iam.PolicyStatement(
             actions=["states:DescribeExecution"],
             resources=[
-                # Allow describing any execution of the restore SM
+                # Allow describing any execution of the secondary restore SM
                 f"arn:aws:states:{secondary_region}:{self.account}:execution:"
-                f"{restore_state_machine_arn.split(':')[-1]}:*"
-            ],
+                f"{restore_state_machine_arn.split(':')[-1]}:*",
+            ] + ([
+                # Allow describing any execution of the primary restore SM (for fallback)
+                f"arn:aws:states:{primary_region}:{self.account}:execution:"
+                f"{primary_restore_state_machine_arn.split(':')[-1]}:*",
+            ] if primary_restore_state_machine_arn else []),
         ))
 
         self.poll_restore_fn = _lambda.Function(
@@ -494,6 +501,228 @@ class FailoverOrchestratorStack(Stack):
             enabled=False,  # Disabled by default — enable after testing
         )
         rule.add_target(events_targets.LambdaFunction(self.health_check_fn))
+
+        # ================================================================
+        # Fallback Orchestrator Step Function
+        # Same flow as failover but in REVERSE direction:
+        #   Pause secondary → Restore metadb into primary → Activate primary
+        # Reuses the same Lambdas (flip, start_restore, poll_restore)
+        # ================================================================
+        if primary_restore_state_machine_arn:
+            # Task 1: Pause DAGs in secondary (currently active after failover)
+            fb_pause_task = tasks.LambdaInvoke(
+                self, "FBPauseActiveDags",
+                lambda_function=self.flip_fn,
+                payload=sfn.TaskInput.from_object({
+                    "mode": "pause_only",
+                    "source_env_name": secondary_env_name,
+                    "source_region": secondary_region,
+                    "target_env_name": primary_env_name,
+                    "target_region": primary_region,
+                    "reason.$": "$.reason",
+                }),
+                result_path="$.pauseResult",
+                result_selector={
+                    "status.$": "$.Payload.status",
+                    "source_paused.$": "$.Payload.source_paused",
+                    "duration_seconds.$": "$.Payload.duration_seconds",
+                },
+            )
+
+            # Task 2: Start restore SM in PRIMARY region (restores secondary's backups into primary)
+            fb_start_restore_task = tasks.LambdaInvoke(
+                self, "FBStartRestore",
+                lambda_function=self.start_restore_fn,
+                payload=sfn.TaskInput.from_object({
+                    "restore_state_machine_arn": primary_restore_state_machine_arn,
+                    "target_region": primary_region,
+                    "reason.$": "$.reason",
+                }),
+                result_path="$.restoreExec",
+                result_selector={
+                    "execution_arn.$": "$.Payload.execution_arn",
+                    "target_region.$": "$.Payload.target_region",
+                    "reason.$": "$.Payload.reason",
+                },
+            )
+
+            # Wait + Poll loop
+            fb_wait = sfn.Wait(
+                self, "FBWaitForRestore",
+                time=sfn.WaitTime.duration(Duration.seconds(60)),
+            )
+
+            fb_poll_task = tasks.LambdaInvoke(
+                self, "FBPollRestore",
+                lambda_function=self.poll_restore_fn,
+                payload=sfn.TaskInput.from_object({
+                    "execution_arn.$": "$.restoreExec.execution_arn",
+                    "target_region.$": "$.restoreExec.target_region",
+                    "reason.$": "$.restoreExec.reason",
+                }),
+                result_path="$.pollResult",
+                result_selector={
+                    "status.$": "$.Payload.status",
+                    "detail.$": "$.Payload.detail",
+                    "execution_arn.$": "$.Payload.execution_arn",
+                    "target_region.$": "$.Payload.target_region",
+                    "reason.$": "$.Payload.reason",
+                },
+            )
+
+            fb_restore_choice = sfn.Choice(self, "FBRestoreComplete?")
+
+            # Task: Activate primary region
+            fb_activate_task = tasks.LambdaInvoke(
+                self, "FBActivatePrimary",
+                lambda_function=self.flip_fn,
+                payload=sfn.TaskInput.from_object({
+                    "mode": "activate",
+                    "target_env_name": primary_env_name,
+                    "target_region": primary_region,
+                    "source_env_name": secondary_env_name,
+                    "source_region": secondary_region,
+                    "reason.$": "$.restoreExec.reason",
+                }),
+                result_path="$.flipResult",
+                result_selector={
+                    "status.$": "$.Payload.status",
+                    "target_unpaused.$": "$.Payload.target_unpaused",
+                    "dynamodb_updated.$": "$.Payload.dynamodb_updated",
+                    "duration_seconds.$": "$.Payload.duration_seconds",
+                },
+            )
+
+            # Notifications
+            fb_notify_success = tasks.SnsPublish(
+                self, "FBNotifySuccess",
+                topic=self.notification_topic,
+                subject="MWAA Fallback to Primary Complete",
+                message=sfn.TaskInput.from_object({
+                    "status": "SUCCESS",
+                    "direction": "FALLBACK_TO_PRIMARY",
+                    "target_env": primary_env_name,
+                    "target_region": primary_region,
+                    "source_env": secondary_env_name,
+                    "source_region": secondary_region,
+                    "restore": "SUCCEEDED",
+                    "flip.$": "$.flipResult",
+                    "reason.$": "$.restoreExec.reason",
+                }),
+                result_path=sfn.JsonPath.DISCARD,
+            )
+
+            fb_notify_pause_failed = tasks.SnsPublish(
+                self, "FBNotifyPauseFailed",
+                topic=self.notification_topic,
+                subject="MWAA Fallback FAILED - Could Not Pause Secondary DAGs",
+                message=sfn.TaskInput.from_object({
+                    "status": "PAUSE_FAILED",
+                    "direction": "FALLBACK_TO_PRIMARY",
+                    "source_env": secondary_env_name,
+                    "source_region": secondary_region,
+                    "reason.$": "$.reason",
+                    "error": "Failed to pause DAGs in secondary region. Fallback aborted.",
+                }),
+                result_path=sfn.JsonPath.DISCARD,
+            )
+
+            fb_notify_start_failed = tasks.SnsPublish(
+                self, "FBNotifyStartFailed",
+                topic=self.notification_topic,
+                subject="MWAA Fallback FAILED - Could Not Start Restore",
+                message=sfn.TaskInput.from_object({
+                    "status": "START_FAILED",
+                    "direction": "FALLBACK_TO_PRIMARY",
+                    "target_env": primary_env_name,
+                    "target_region": primary_region,
+                    "reason.$": "$.reason",
+                    "error": "Failed to start restore into primary. Secondary DAGs are PAUSED.",
+                }),
+                result_path=sfn.JsonPath.DISCARD,
+            )
+
+            fb_notify_restore_failed = tasks.SnsPublish(
+                self, "FBNotifyRestoreFailed",
+                topic=self.notification_topic,
+                subject="MWAA Fallback FAILED - MetaDB Restore Error",
+                message=sfn.TaskInput.from_object({
+                    "status": "RESTORE_FAILED",
+                    "direction": "FALLBACK_TO_PRIMARY",
+                    "target_env": primary_env_name,
+                    "target_region": primary_region,
+                    "reason.$": "$.restoreExec.reason",
+                    "detail.$": "$.pollResult.detail",
+                    "error": "MetaDB restore into primary failed. Secondary DAGs are PAUSED.",
+                }),
+                result_path=sfn.JsonPath.DISCARD,
+            )
+
+            fb_notify_activate_failed = tasks.SnsPublish(
+                self, "FBNotifyActivateFailed",
+                topic=self.notification_topic,
+                subject="MWAA Fallback FAILED - Primary Activation Error",
+                message=sfn.TaskInput.from_object({
+                    "status": "ACTIVATE_FAILED",
+                    "direction": "FALLBACK_TO_PRIMARY",
+                    "target_env": primary_env_name,
+                    "target_region": primary_region,
+                    "reason.$": "$.restoreExec.reason",
+                    "error": "MetaDB restored but primary activation failed. Secondary DAGs are PAUSED.",
+                }),
+                result_path=sfn.JsonPath.DISCARD,
+            )
+
+            # Error handling
+            fb_pause_task.add_catch(fb_notify_pause_failed, errors=["States.ALL"], result_path="$.pauseError")
+            fb_start_restore_task.add_catch(fb_notify_start_failed, errors=["States.ALL"], result_path="$.startError")
+            fb_poll_task.add_catch(fb_notify_restore_failed, errors=["States.ALL"], result_path="$.pollError")
+            fb_activate_task.add_catch(fb_notify_activate_failed, errors=["States.ALL"], result_path="$.flipError")
+
+            # Wire poll loop
+            fb_restore_choice.when(
+                sfn.Condition.string_equals("$.pollResult.status", "running"),
+                fb_wait,
+            ).when(
+                sfn.Condition.string_equals("$.pollResult.status", "success"),
+                fb_activate_task.next(fb_notify_success),
+            ).otherwise(
+                fb_notify_restore_failed,
+            )
+
+            fb_wait.next(fb_poll_task).next(fb_restore_choice)
+
+            fb_definition = fb_pause_task.next(fb_start_restore_task).next(fb_wait)
+
+            fb_log_group = logs.LogGroup(
+                self, "FallbackOrchestratorLogGroup",
+                log_group_name=f"/aws/stepfunctions/mwaa-fallback-orchestrator-{self.region}",
+                removal_policy=RemovalPolicy.DESTROY,
+            )
+
+            self.fallback_state_machine = sfn.StateMachine(
+                self, "FallbackOrchestratorSM",
+                state_machine_name=f"mwaa-fallback-orchestrator-{self.region}",
+                definition_body=sfn.DefinitionBody.from_chainable(fb_definition),
+                timeout=Duration.hours(4),
+                logs=sfn.LogOptions(
+                    destination=fb_log_group,
+                    level=sfn.LogLevel.ALL,
+                ),
+            )
+
+            # Grant permissions
+            self.start_restore_fn.grant_invoke(self.fallback_state_machine.role)
+            self.poll_restore_fn.grant_invoke(self.fallback_state_machine.role)
+            self.flip_fn.grant_invoke(self.fallback_state_machine.role)
+            self.fallback_state_machine.role.add_to_policy(iam.PolicyStatement(
+                actions=["sns:Publish"],
+                resources=[self.notification_topic.topic_arn],
+            ))
+
+            CfnOutput(self, "FallbackStateMachineArn",
+                      value=self.fallback_state_machine.state_machine_arn,
+                      description="Fallback orchestrator Step Functions ARN (secondary → primary)")
 
         # ================================================================
         # Outputs

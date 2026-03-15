@@ -4,23 +4,13 @@ Monitor restore progress by checking the Glue job status directly.
 The restore DAG starts a Glue job and returns immediately. This Lambda
 monitors the Glue job run to determine if the restore is complete.
 
+Since DAGs are paused before restore starts, there's no risk of picking
+up a stale run — the latest run is always the one we triggered.
+
 Used in a Step Functions Wait loop.
 """
-import json
 import os
 import boto3
-
-
-def find_latest_glue_run(glue, job_name):
-    """Find the most recent run of the Glue job."""
-    try:
-        resp = glue.get_job_runs(JobName=job_name, MaxResults=1)
-        runs = resp.get('JobRuns', [])
-        if runs:
-            return runs[0]
-    except Exception as e:
-        print(f"Error getting Glue runs: {e}")
-    return None
 
 
 def handler(event, context):
@@ -58,11 +48,16 @@ def handler(event, context):
             print(f"Error checking known run {prev_glue_run_id}: {e}")
             run = None
     else:
-        # Find the latest run
-        run = find_latest_glue_run(glue, glue_job_name)
+        # Get the latest run — DAGs are paused so no competing runs
+        try:
+            resp = glue.get_job_runs(JobName=glue_job_name, MaxResults=1)
+            runs = resp.get('JobRuns', [])
+            run = runs[0] if runs else None
+        except Exception as e:
+            print(f"Error getting Glue runs: {e}")
+            run = None
 
     if not run:
-        # No runs found yet — DAG may not have started the Glue job yet
         print(f"No Glue runs found for {glue_job_name}, DAG may still be starting")
         return {
             'status': 'running',

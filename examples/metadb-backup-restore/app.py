@@ -77,6 +77,11 @@ if deploy_failover:
         f":stateMachine:mwaa-metadb-auto-restore-{SECONDARY_REGION}"
     )
 
+    primary_restore_sm_arn = (
+        f"arn:aws:states:{PRIMARY_REGION}:{account}"
+        f":stateMachine:mwaa-metadb-auto-restore-{PRIMARY_REGION}"
+    )
+
     FailoverOrchestratorStack(
         app,
         "FailoverOrchestrator",
@@ -85,6 +90,7 @@ if deploy_failover:
         secondary_env_name=SECONDARY_MWAA_ENV,
         secondary_region=SECONDARY_REGION,
         restore_state_machine_arn=secondary_restore_sm_arn,
+        primary_restore_state_machine_arn=primary_restore_sm_arn,
         env=cdk.Environment(account=account, region=PRIMARY_REGION),
         description="MWAA Failover Orchestrator - monitors primary, fails over to secondary",
     )
