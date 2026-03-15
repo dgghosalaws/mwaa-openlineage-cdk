@@ -10,7 +10,6 @@ and automated failover orchestration.
 - VPC, subnets, and security groups in both regions
 - S3 buckets for MWAA assets (DAGs) in both regions
 - Two MWAA environments (primary + secondary) running Airflow 3.0.6
-- Test DAG for verification
 
 ## Architecture
 
@@ -80,8 +79,8 @@ ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 npx cdk deploy --all -c account=$ACCOUNT --require-approval never
 ```
 
-After CDK deploys, upload the test DAG to both S3 buckets.
-See QUICK_START.md Step 4 for details.
+After CDK deploys, verify both MWAA environments show `AVAILABLE` status.
+See QUICK_START.md for details.
 
 ## Verification
 
@@ -94,7 +93,7 @@ aws mwaa get-environment --name mwaa-openlineage-dr-secondary-dev \
   --region us-east-1 --query 'Environment.Status'
 ```
 
-Open the Airflow UI and trigger `dr_test_dag` to verify the environment is working.
+Open the Airflow UI to verify the environment is accessible.
 
 ## Cleanup
 

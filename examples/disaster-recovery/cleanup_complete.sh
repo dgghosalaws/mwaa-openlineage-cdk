@@ -8,7 +8,6 @@ echo ""
 echo "This script will delete all DR infrastructure:"
 echo "  - MWAA environments in both regions"
 echo "  - Network infrastructure in both regions"
-echo "  - DynamoDB state table"
 echo ""
 echo "WARNING: This is destructive and cannot be undone!"
 echo ""
@@ -75,16 +74,7 @@ cdk destroy MwaaDRS3Secondary --force || echo "Secondary S3 stack not found or a
 
 echo ""
 echo "=========================================="
-echo "Step 3: Delete DynamoDB State Table"
-echo "=========================================="
-echo ""
-
-echo "Deleting DynamoDB state table..."
-cdk destroy MwaaDRStateStack --force || echo "State table stack not found or already deleted"
-
-echo ""
-echo "=========================================="
-echo "Step 4: Delete Network Infrastructure"
+echo "Step 3: Delete Network Infrastructure"
 echo "=========================================="
 echo ""
 

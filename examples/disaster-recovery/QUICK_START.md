@@ -8,7 +8,6 @@ foundational two-region setup that the `metadb-backup-restore` example builds on
 - Two MWAA environments (primary in us-east-2, secondary in us-east-1)
 - VPC, subnets, and security groups in both regions
 - S3 buckets for MWAA assets (DAGs) in both regions
-- Test DAG for verification
 
 ## Prerequisites
 
@@ -58,29 +57,6 @@ This deploys 6 stacks:
 
 Total deployment time: ~40-50 minutes.
 
-### Step 4: Upload Assets to S3
-
-After stacks are deployed, upload the test DAG to both S3 buckets:
-
-```bash
-# Get bucket names from CloudFormation outputs
-PRIMARY_BUCKET=$(aws cloudformation describe-stacks \
-  --stack-name MwaaDRS3Primary --region us-east-2 \
-  --query 'Stacks[0].Outputs[?OutputKey==`MwaaBucketName`].OutputValue' \
-  --output text)
-
-SECONDARY_BUCKET=$(aws cloudformation describe-stacks \
-  --stack-name MwaaDRS3Secondary --region us-east-1 \
-  --query 'Stacks[0].Outputs[?OutputKey==`MwaaBucketName`].OutputValue' \
-  --output text)
-
-# Upload to primary
-aws s3 cp assets/dags/dr_test_dag.py s3://$PRIMARY_BUCKET/dags/ --region us-east-2
-
-# Upload to secondary
-aws s3 cp assets/dags/dr_test_dag.py s3://$SECONDARY_BUCKET/dags/ --region us-east-1
-```
-
 ## Verify
 
 ### 1. Check MWAA Status
@@ -115,11 +91,7 @@ aws mwaa create-web-login-token \
   --region us-east-1
 ```
 
-Open the returned URL in your browser. You should see the `dr_test_dag` in the DAG list.
-
-### 3. Run Test DAG
-
-Trigger `dr_test_dag` in either region to verify the environment is working.
+Open the returned URL in your browser to verify the environment is accessible.
 
 ## CDK Stacks
 
