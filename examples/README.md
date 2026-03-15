@@ -46,6 +46,29 @@ Adds automated health monitoring and failover to the DR setup:
 - [Complete README](automated-failover/README.md)
 - [Scheduler Heartbeat Notes](automated-failover/SCHEDULER_HEARTBEAT_NOTES.md)
 
+### 3. MetaDB Backup/Restore
+**Path**: `metadb-backup-restore/`
+
+Deploys infrastructure for MWAA metadata database backup and restore using AWS Glue:
+- Glue IAM roles for JDBC access to MWAA metadb
+- Glue jobs for export (read) and restore (COPY command)
+- S3 bucket for backup storage
+- Step Functions workflows for orchestrating export/restore
+- Lambda for Glue connection management
+- Airflow DAGs for triggering from within MWAA
+
+**Key Features:**
+- Works with both Airflow 2.x and 3.x
+- Uses Glue JDBC connection to MWAA's PostgreSQL metadb
+- Export: reads tables via Spark, writes pipe-delimited CSV to S3
+- Restore: uses PostgreSQL COPY FROM STDIN for fast bulk loading
+- Step Functions for external orchestration (no MWAA dependency)
+- Airflow DAGs for triggering from within MWAA
+- Assumes MWAA environments already exist
+
+**Documentation:**
+- [Deploy Script](metadb-backup-restore/deploy.sh)
+
 ## Architecture Overview
 
 ```
