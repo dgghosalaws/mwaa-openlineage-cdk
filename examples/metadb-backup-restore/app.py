@@ -15,9 +15,15 @@ This app deploys per region:
 - S3 bucket for backup storage
 - Step Functions workflows for orchestrating export/restore
 - Lambda for Glue connection management
+
+Optionally deploys (set context -c failover=true):
+- Failover Orchestrator: Step Function that chains restore → flip → notify
+- Health check Lambda + EventBridge schedule
+- DynamoDB state table for active region tracking
 """
 import aws_cdk as cdk
 from stacks.metadb_backup_restore_stack import MetaDBBackupRestoreStack
+from stacks.failover_orchestrator_stack import FailoverOrchestratorStack
 
 app = cdk.App()
 
@@ -54,5 +60,33 @@ MetaDBBackupRestoreStack(
     env=cdk.Environment(account=account, region=SECONDARY_REGION),
     description="MWAA MetaDB Backup/Restore - Secondary (us-east-1)",
 )
+
+# ====================================================================
+# Failover Orchestrator (optional — deploy with: cdk deploy -c failover=true)
+# ====================================================================
+deploy_failover = app.node.try_get_context("failover") == "true"
+
+if deploy_failover:
+    # The orchestrator lives in the PRIMARY region and monitors the primary env.
+    # On failure it: restores metadb into secondary → flips active region.
+    #
+    # It needs the ARN of the SECONDARY restore state machine (the one that
+    # restores primary's backups into the secondary environment).
+    secondary_restore_sm_arn = (
+        f"arn:aws:states:{SECONDARY_REGION}:{account}"
+        f":stateMachine:mwaa-metadb-auto-restore-{SECONDARY_REGION}"
+    )
+
+    FailoverOrchestratorStack(
+        app,
+        "FailoverOrchestrator",
+        primary_env_name=PRIMARY_MWAA_ENV,
+        primary_region=PRIMARY_REGION,
+        secondary_env_name=SECONDARY_MWAA_ENV,
+        secondary_region=SECONDARY_REGION,
+        restore_state_machine_arn=secondary_restore_sm_arn,
+        env=cdk.Environment(account=account, region=PRIMARY_REGION),
+        description="MWAA Failover Orchestrator - monitors primary, fails over to secondary",
+    )
 
 app.synth()
