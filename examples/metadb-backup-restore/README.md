@@ -432,6 +432,28 @@ The EventBridge rule deploys **disabled by default**. Enable it only after testi
 | `cooldown_minutes` | `30` | Minimum time between automated failovers |
 | `notification_email` | (none) | Email for SNS subscription (optional) |
 
+### Glue Connection Mechanism
+
+MWAA does not expose its PostgreSQL metadb credentials externally. The Glue
+connection is created at runtime by the Airflow DAG, which runs inside the MWAA
+worker and has access to the internal DB credentials:
+
+1. The `create_glue_connection` task in the DAG extracts the JDBC URL, username,
+   and password from MWAA environment variables (`AIRFLOW__DATABASE__SQL_ALCHEMY_CONN`
+   or `DB_SECRETS` + `POSTGRES_HOST`)
+2. It calls `mwaa:GetEnvironment` to retrieve the VPC subnet and security group
+   IDs, then creates a Glue JDBC connection with those credentials and network config
+3. The `start_restore` task creates/updates the Glue job with
+   `Connections: [conn_name]`, which tells Glue to place its ENIs in the same
+   subnet/SG as MWAA — giving it network access to the RDS instance
+4. The Glue script reads the connection properties at runtime via
+   `glue:GetConnection` to obtain the JDBC URL and credentials, then connects
+   directly using `pg8000`
+
+The CDK stack provides the IAM permissions (`glue:CreateConnection`,
+`ec2:CreateNetworkInterface`, etc.) that make this flow possible. The same
+mechanism is used for both export and restore jobs.
+
 ---
 
 ## How It Works
