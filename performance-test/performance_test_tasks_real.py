@@ -42,6 +42,7 @@ def real_load_task(
     duration: int,
     wave_num: int,
     dag_num: int,
+    batch_num: int = 0,
     **context
 ):
     """
@@ -55,6 +56,7 @@ def real_load_task(
         duration: How long the task should run (seconds)
         wave_num: Wave number for logging
         dag_num: DAG number for logging
+        batch_num: Batch number within the DAG
     """
     logger = logging.getLogger(__name__)
     start_time = time.time()
@@ -62,7 +64,7 @@ def real_load_task(
     # Log start (only for first and last task to reduce noise)
     if task_id == 0 or task_id % 10 == 9:  # Log every 10th task
         logger.info(
-            f"Wave {wave_num} - DAG {dag_num} - Task {task_id} started "
+            f"Wave {wave_num} - DAG {dag_num} - Batch {batch_num} - Task {task_id} started "
             f"(duration: {duration}s)"
         )
     
@@ -75,7 +77,7 @@ def real_load_task(
     # Log completion (only for first and last task)
     if task_id == 0 or task_id % 10 == 9:
         logger.info(
-            f"Wave {wave_num} - DAG {dag_num} - Task {task_id} completed in "
+            f"Wave {wave_num} - DAG {dag_num} - Batch {batch_num} - Task {task_id} completed in "
             f"{actual_duration:.1f}s"
         )
     

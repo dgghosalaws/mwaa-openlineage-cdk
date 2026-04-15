@@ -18,7 +18,35 @@ Each set generates:
 - 1 master trigger DAG (`trigger_dag_factory_sustained_test_set_NN`)
 - 1 YAML config file (`dag_factory_config_sustained_set_NN.yaml`)
 
+### Batched Task Execution
+
+Instead of long-running tasks that sleep for the entire wave duration, each DAG uses sequential batches of short-lived parallel tasks to sustain load.
+
+```
+wave_delay → [batch 0: 30 tasks @ 120s] → sync → [batch 1: 30 tasks @ 120s] → sync → ...
+```
+
+- Each batch runs `tasks_per_dag` tasks in parallel (default: `peak_tasks // 65`)
+- Each task sleeps for `--task-duration` seconds (default: 120s)
+- Batches are chained sequentially via sync tasks
+- Number of batches = `wave_duration / task_duration` (auto-calculated per wave)
+
+This means at any point in time, each DAG has one active batch of parallel tasks. The concurrent task count across all DAGs and sets is:
+
+```
+concurrent tasks = (peak_tasks // 65) × 65 × num_sets
+```
+
+### Wave Pattern
+
 The test follows a 40-minute wave pattern per set:
+
+| Wave | Delay | Duration | Batches (@ 120s) | Description |
+|------|-------|----------|-------------------|-------------|
+| 1 | 0 min | 25 min | 13 | Baseline ramp |
+| 2 | 2 min | 28 min | 14 | 50% ramp |
+| 3 | 4 min | 31 min | 16 | 75% ramp |
+| 4-7 | 5-20 min | 35 min | 18 | Sustained peak |
 
 ```
 Time     Load
@@ -34,11 +62,17 @@ Time     Load
 ```bash
 cd performance-test
 
-# Single set (65 DAGs, 2000 peak tasks)
+# Single set (65 DAGs, 2000 peak tasks, 120s task duration)
 python generate_dag_factory_sustained.py
 
-# 2 sets (130 DAGs, 2000 peak tasks per set, 4000 total)
-python generate_dag_factory_sustained.py --sets 2
+# 2 sets for ~4000 concurrent tasks
+python generate_dag_factory_sustained.py --sets 2 --peak-tasks 2000
+
+# 2 sets with exact 4000+ concurrent (32 tasks/batch × 65 DAGs × 2 sets = 4160)
+python generate_dag_factory_sustained.py --sets 2 --peak-tasks 2080
+
+# Custom task duration (60s instead of 120s)
+python generate_dag_factory_sustained.py --sets 2 --task-duration 60
 
 # 3 sets with 4000 peak tasks each
 python generate_dag_factory_sustained.py --peak-tasks 4000 --sets 3
@@ -73,16 +107,18 @@ This creates per-set files:
 python generate_dag_factory_sustained.py [OPTIONS]
 
 Options:
-  --peak-tasks INT     Peak concurrent tasks per set (default: 2000)
-  --peak-duration INT  Minutes to sustain peak load (default: 20)
-  --sets INT           Number of sets of 65 DAGs (default: 1)
+  --peak-tasks INT      Peak concurrent tasks per set (default: 2000)
+  --peak-duration INT   Minutes to sustain peak load (default: 20)
+  --sets INT            Number of sets of 65 DAGs (default: 1)
+  --task-duration INT   Duration of each task in seconds (default: 120)
 ```
 
 ## Scaling Examples
 
-| Sets | DAGs | Peak Tasks/Set | Total Peak Tasks |
-|------|------|----------------|------------------|
-| 1    | 65   | 2000           | 2000             |
-| 2    | 130  | 2000           | 4000             |
-| 3    | 195  | 4000           | 12000            |
-| 5    | 325  | 2000           | 10000            |
+| Sets | Peak Tasks/Set | Tasks/Batch | Concurrent Tasks | Task Duration |
+|------|----------------|-------------|------------------|---------------|
+| 1    | 2000           | 30          | ~1950            | 120s          |
+| 2    | 2000           | 30          | ~3900            | 120s          |
+| 2    | 2080           | 32          | ~4160            | 120s          |
+| 3    | 4000           | 61          | ~11895           | 120s          |
+| 5    | 2000           | 30          | ~9750            | 120s          |
