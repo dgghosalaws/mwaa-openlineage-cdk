@@ -2,5 +2,6 @@
 configs/
 dag_factory_sustained_set_*.py
 trigger_dag_factory_sustained_set_*.py
+
 *.pyc
 __pycache__/

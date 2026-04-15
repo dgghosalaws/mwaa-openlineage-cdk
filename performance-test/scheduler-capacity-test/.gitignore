@@ -1,0 +1,7 @@
+# Generated files (created by generate_dag_factory_throughput.py)
+throughput_configs/
+throughput_loader_*.py
+throughput_tasks.py
+trigger_throughput_test.py
+*.pyc
+__pycache__/

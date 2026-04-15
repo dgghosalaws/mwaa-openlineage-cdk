@@ -2,6 +2,8 @@
 
 Generate and run sustained load tests on MWAA using [dag-factory](https://astronomer.github.io/dag-factory/latest/). Each test set creates 65 DAGs with configurable parallel tasks. Multiple sets can run simultaneously to scale concurrent task count.
 
+See also: [Scheduler Capacity Test](scheduler-capacity-test/) — 4000 DAGs with 2 dummy tasks each for scheduler parsing/scheduling capacity testing.
+
 ## Prerequisites
 
 - MWAA environment running Airflow 3.0+
