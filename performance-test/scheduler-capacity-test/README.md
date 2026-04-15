@@ -1,10 +1,10 @@
 # Scheduler Capacity Test — 4000 DAGs with DAG Factory
 
-Tests MWAA scheduler parsing and scheduling capacity by generating a large number of minimal DAGs.
+Tests MWAA scheduler parsing capacity by loading a large number of DAGs and verifying they appear in the Airflow UI. The goal is to confirm the scheduler can parse and register N DAGs without errors or timeouts.
 
 ## What It Does
 
-Generates N DAGs (default 4000), each with 2 chained dummy tasks (`task_a → task_b`). Tasks sleep for a configurable duration (default 30s). DAGs are split across multiple loader files (400 DAGs per loader) to stay under Airflow's DAG parse timeout.
+Generates N DAGs (default 4000), each with 2 chained dummy tasks (`task_a → task_b`). DAGs are split across multiple loader files (400 DAGs per loader) to stay under Airflow's DAG parse timeout. Each per-DAG YAML is ~900 bytes.
 
 ## Prerequisites
 
@@ -16,16 +16,13 @@ Generates N DAGs (default 4000), each with 2 chained dummy tasks (`task_a → ta
 ### 1. Generate
 
 ```bash
-cd performance-test/throughput-test
+cd performance-test/scheduler-capacity-test
 
-# Default: 4000 DAGs, 30s task duration
+# Default: 4000 DAGs
 python generate_dag_factory_throughput.py
 
 # Custom count
 python generate_dag_factory_throughput.py --dags 2000
-
-# Custom task duration
-python generate_dag_factory_throughput.py --dags 4000 --task-duration 60
 ```
 
 Generated files:
@@ -40,11 +37,11 @@ Generated files:
 ./upload_throughput_test.sh <your-mwaa-bucket> [region]
 ```
 
-### 3. Run
+### 3. Verify
 
 1. Wait 2-5 minutes for MWAA to parse
-2. Find `trigger_throughput_test` in Airflow UI (tag: `master-trigger`)
-3. Trigger it — all 4000 DAGs fire simultaneously
+2. Check Airflow UI for 4000 DAGs (tag: `throughput-test`)
+3. All DAGs should appear without import errors
 
 ## CLI Reference
 
@@ -62,4 +59,3 @@ Options:
 |------|-------------|
 | `generate_dag_factory_throughput.py` | Generator |
 | `upload_throughput_test.sh` | S3 upload script |
-| `requirements.txt` | Shared with sustained test (dag-factory, pyyaml) |
