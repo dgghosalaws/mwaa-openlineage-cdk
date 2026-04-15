@@ -1,123 +1,88 @@
-# MWAA Performance Testing
+# Performance Test — Sustained Load with DAG Factory
 
-Two approaches for performance testing your MWAA environment.
+Generate and run sustained load tests on MWAA using [dag-factory](https://github.com/ajbosco/dag-factory). Each test set creates 65 DAGs with configurable tasks per DAG. Multiple sets can run in parallel to scale concurrent task count.
 
-## Approaches
+## Files
 
-### 1. DAG Factory Approach (Recommended)
+| File | Description |
+|------|-------------|
+| `generate_dag_factory_sustained.py` | Generator — produces YAML configs and master trigger DAGs |
+| `dag_factory_sustained.py` | YAML loader — Airflow picks this up and creates DAGs from all set configs |
+| `performance_test_tasks_real.py` | Task implementations (`wave_delay_task`, `real_load_task`) |
+| `upload_sustained_test.sh` | Uploads generated files to your MWAA S3 bucket |
 
-Uses DAG Factory to dynamically generate test DAGs with real concurrent tasks.
+## How It Works
 
-**Advantages:**
-- Configurable task count and duration
-- Single set of files for multiple test scenarios
-- Real concurrent tasks (not simulated)
-- Easy to customize
+Each set generates:
+- 65 DAGs (`factory_sustained_set_NN_dag_000` through `_064`)
+- 1 master trigger DAG (`trigger_dag_factory_sustained_test_set_NN`)
+- 1 YAML config file (`dag_factory_config_sustained_set_NN.yaml`)
 
-**Test Scenarios:**
+The test follows a 40-minute wave pattern per set:
 
-#### A. Concurrent Load Test (Quick)
-Tests immediate concurrent load capacity.
-
-**Files:**
-- `generate_dag_factory_config_real.py` - Configuration generator
-- `dag_factory_concurrent_real.py` - DAG loader
-- `trigger_dag_factory_concurrent_real.py` - Trigger DAG
-- `performance_test_tasks_real.py` - Task functions
-
-**Quick Start:**
-```bash
-# Generate 2000 concurrent tasks (default)
-python3 generate_dag_factory_config_real.py
-
-# Generate 4000 concurrent tasks
-python3 generate_dag_factory_config_real.py --tasks 4000
-
-# Upload to S3 and trigger in Airflow UI
+```
+Time     Load
+0-5m     Ramp up (500 → peak)
+5-25m    Sustained peak
+25-40m   Ramp down (peak → 0)
 ```
 
-**Duration:** ~2 minutes
+## Quick Start
 
-#### B. Sustained Load Test (Long Duration)
-Tests sustained load with gradual ramp-up and ramp-down.
+### 1. Generate configs
 
-**Files:**
-- `generate_dag_factory_sustained.py` - Configuration generator
-- `dag_factory_sustained.py` - DAG loader
-- `trigger_dag_factory_sustained.py` - Trigger DAG
-- `performance_test_tasks_real.py` - Task functions (shared)
-
-**Quick Start:**
 ```bash
-# Generate 2000 peak tasks (default)
-python3 generate_dag_factory_sustained.py
+cd performance-test
 
-# Generate 4000 peak tasks
-python3 generate_dag_factory_sustained.py --peak-tasks 4000
+# Single set (65 DAGs, 2000 peak tasks)
+python generate_dag_factory_sustained.py
 
-# Custom peak and duration
-python3 generate_dag_factory_sustained.py --peak-tasks 3000 --peak-duration 30
+# 2 sets (130 DAGs, 2000 peak tasks per set, 4000 total)
+python generate_dag_factory_sustained.py --sets 2
 
-# Upload to S3 and trigger in Airflow UI
+# 3 sets with 4000 peak tasks each
+python generate_dag_factory_sustained.py --peak-tasks 4000 --sets 3
+
+# Custom peak duration (30 min instead of default 20)
+python generate_dag_factory_sustained.py --peak-tasks 3000 --peak-duration 30 --sets 2
 ```
 
-**Test Pattern (40 minutes):**
-- 0-5 min: Ramp up from 500 → peak tasks
-- 5-25 min: Sustain peak load (20 minutes)
-- 25-40 min: Ramp down peak → 0 tasks
+This creates per-set files:
+- `dag_factory_config_sustained_set_01.yaml`, `..._set_02.yaml`, etc.
+- `trigger_dag_factory_sustained_set_01.py`, `..._set_02.py`, etc.
 
-**Duration:** ~40 minutes
+### 2. Upload to S3
 
-**Documentation:** [DAG_FACTORY_USER_GUIDE.md](DAG_FACTORY_USER_GUIDE.md)
+```bash
+./upload_sustained_test.sh <your-mwaa-bucket> [region]
 
-### 2. Python DAG Approach (Legacy)
+# Example
+./upload_sustained_test.sh my-mwaa-bucket us-east-2
+```
 
-Traditional Python DAGs with predefined test scenarios.
+### 3. Run the test
 
-**Test Scenarios:**
-- Gradual Load Test (7,000 tasks, 4.5 minutes)
-- 5K Load Test (5,000 tasks, 4.5 minutes)
-- Sustained Load Test (7,000 tasks, 55 minutes)
+1. Wait 2–5 minutes for MWAA to parse the DAGs
+2. In the Airflow UI, find the master trigger DAGs (tag: `master-trigger`)
+3. Trigger all sets simultaneously for maximum parallel load
+4. Monitor CloudWatch for ~40 minutes
 
-**Files:**
-- `test_distributed_gradual_load.py` - Gradual load test
-- `test_distributed_5k_load.py` - 5K load test
-- `test_sustained_load.py` - Sustained load test
-- `trigger_master_dag.py` - Trigger for gradual test
-- `trigger_5k_test.py` - Trigger for 5K test
-- `trigger_sustained_load.py` - Trigger for sustained test
+## CLI Reference
 
-**Documentation:** See main [PERFORMANCE_TESTING.md](../PERFORMANCE_TESTING.md) in parent directory
+```
+python generate_dag_factory_sustained.py [OPTIONS]
 
-## Which Approach to Use?
+Options:
+  --peak-tasks INT     Peak concurrent tasks per set (default: 2000)
+  --peak-duration INT  Minutes to sustain peak load (default: 20)
+  --sets INT           Number of sets of 65 DAGs (default: 1)
+```
 
-**Use DAG Factory Concurrent Test if:**
-- You want quick capacity validation (~2 minutes)
-- You need to test different task counts easily
-- You want immediate concurrent load
-- You're testing maximum burst capacity
+## Scaling Examples
 
-**Use DAG Factory Sustained Test if:**
-- You need long-duration stability testing (~40 minutes)
-- You want to test sustained high load (20+ minutes)
-- You need gradual ramp-up/ramp-down patterns
-- You're testing for memory leaks or resource degradation
-- You want to validate auto-scaling behavior over time
-
-**Use Python DAG Approach if:**
-- You need the specific predefined test scenarios
-- You're already familiar with these tests
-- You need the exact wave-based patterns from legacy tests
-
-## Requirements
-
-Both approaches require:
-- MWAA Airflow 3.0.6+
-- Appropriate worker capacity
-- Pool configuration
-- CloudWatch monitoring (optional)
-
-## Support
-
-- DAG Factory Approach: See [DAG_FACTORY_USER_GUIDE.md](DAG_FACTORY_USER_GUIDE.md)
-- Python DAG Approach: See [PERFORMANCE_TESTING.md](../PERFORMANCE_TESTING.md)
+| Sets | DAGs | Peak Tasks/Set | Total Peak Tasks |
+|------|------|----------------|------------------|
+| 1    | 65   | 2000           | 2000             |
+| 2    | 130  | 2000           | 4000             |
+| 3    | 195  | 4000           | 12000            |
+| 5    | 325  | 2000           | 10000            |

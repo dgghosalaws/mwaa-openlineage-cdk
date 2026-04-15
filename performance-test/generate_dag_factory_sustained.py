@@ -2,6 +2,7 @@
 Generate DAG Factory YAML Configuration for Sustained Load Testing
 
 This generates a sustained load test with gradual ramp-up, sustained peak, and ramp-down.
+Supports multiple sets of 65 DAGs each, with a master trigger DAG per set.
 
 Test Pattern (40 minutes total):
 - 0-5 min: Ramp up from 500 → peak tasks
@@ -9,18 +10,22 @@ Test Pattern (40 minutes total):
 - 25-40 min: Ramp down peak → 0 tasks
 
 Usage:
-    # Generate 2000 peak tasks (default)
+    # Generate 2000 peak tasks (default, 1 set of 65 DAGs)
     python generate_dag_factory_sustained.py
     
-    # Generate 4000 peak tasks
-    python generate_dag_factory_sustained.py --peak-tasks 4000
+    # Generate 2 sets of 65 DAGs (130 DAGs total, 2 master triggers)
+    python generate_dag_factory_sustained.py --sets 2
+    
+    # Generate 4000 peak tasks with 3 sets
+    python generate_dag_factory_sustained.py --peak-tasks 4000 --sets 3
     
     # Custom peak and duration
-    python generate_dag_factory_sustained.py --peak-tasks 3000 --peak-duration 30
+    python generate_dag_factory_sustained.py --peak-tasks 3000 --peak-duration 30 --sets 2
 """
 
 import yaml
 import argparse
+import os
 from typing import Dict, List
 
 
@@ -102,10 +107,16 @@ def calculate_wave_config(peak_tasks: int, peak_duration: int = 20) -> Dict:
     })
     
     # Peak waves - longest tasks to finish last (creating final ramp-down)
+    # Distribute remaining DAGs evenly, with the last wave absorbing any remainder
     current_dag = dags_wave3
+    dags_per_peak_wave = dags_peak // num_peak_waves
     for i in range(num_peak_waves):
         wave_num = 4 + i
-        dags_this_wave = min(dags_peak // num_peak_waves, num_dags - current_dag)
+        if i == num_peak_waves - 1:
+            # Last peak wave gets all remaining DAGs
+            dags_this_wave = num_dags - current_dag
+        else:
+            dags_this_wave = min(dags_per_peak_wave, num_dags - current_dag)
         
         waves.append({
             'wave': wave_num,
@@ -131,6 +142,7 @@ def generate_dag_config(
     dag_num: int,
     wave_config: Dict,
     tasks_per_dag: int,
+    set_num: int = 1,
 ) -> Dict:
     """
     Generate configuration for a single DAG.
@@ -139,8 +151,9 @@ def generate_dag_config(
         dag_num: DAG number (0-based)
         wave_config: Wave configuration for this DAG
         tasks_per_dag: Number of tasks per DAG
+        set_num: Set number (1-based)
     """
-    dag_id = f"factory_sustained_dag_{dag_num:03d}"
+    dag_id = f"factory_sustained_set_{set_num:02d}_dag_{dag_num:03d}"
     wave_num = wave_config['wave']
     delay_seconds = wave_config['delay_minutes'] * 60
     task_duration = wave_config['task_duration'] * 60  # Convert to seconds
@@ -186,21 +199,21 @@ def generate_dag_config(
                 'retries': 0,
                 'execution_timeout': {'minutes': 45},
             },
-            'description': f'Sustained Load Test - DAG {dag_num:03d} - Wave {wave_num} - {wave_config["description"]}',
+            'description': f'Sustained Load Test - Set {set_num:02d} - DAG {dag_num:03d} - Wave {wave_num} - {wave_config["description"]}',
             'schedule': None,
             'catchup': False,
             'max_active_runs': 1,
             'max_active_tasks': tasks_per_dag + 5,
             'dagrun_timeout': {'minutes': 50},
             'is_paused_upon_creation': False,
-            'tags': ['dag-factory-test', 'sustained-load', 'performance', f'wave-{wave_num}', f'dag-{dag_num}'],
+            'tags': ['dag-factory-test', 'sustained-load', 'performance', f'set-{set_num}', f'wave-{wave_num}', f'dag-{dag_num}'],
             'tasks': tasks_list
         }
     }
 
 
-def generate_full_config(peak_tasks: int = 2000, peak_duration: int = 20) -> tuple:
-    """Generate complete YAML configuration for sustained load test"""
+def generate_full_config(peak_tasks: int = 2000, peak_duration: int = 20, set_num: int = 1) -> tuple:
+    """Generate complete YAML configuration for a single set of sustained load test DAGs"""
     config_dict = {}
     
     # Calculate wave configuration
@@ -225,34 +238,151 @@ def generate_full_config(peak_tasks: int = 2000, peak_duration: int = 20) -> tup
                 dag_num=dag_num,
                 wave_config=wave,
                 tasks_per_dag=tasks_per_dag,
+                set_num=set_num,
             )
             config_dict.update(dag_config)
     
     return config_dict, wave_params
 
 
+
+def generate_trigger_dag(set_num: int, num_dags: int, tasks_per_dag: int, total_tasks: int,
+                         peak_tasks: int, peak_duration: int, total_duration: int, waves: list) -> str:
+    """Generate the master trigger DAG Python file content for a given set."""
+    wave_log_lines = ""
+    for wave in waves:
+        wave_log_lines += f'    logger.info("  - Wave {wave["wave"]}: T+{wave["delay_minutes"]}min - {wave["description"]}")\n'
+
+    return f'''"""
+Master Trigger DAG for DAG Factory Sustained Load Test - Set {set_num:02d}
+
+This DAG triggers all DAG Factory sustained test DAGs for set {set_num:02d} with wave-based timing.
+
+Configuration:
+- Generated by: generate_dag_factory_sustained.py --sets N
+- Set: {set_num:02d}
+- DAGs: {num_dags}
+- Peak tasks per set: {total_tasks}
+"""
+
+from airflow import DAG
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.operators.python import PythonOperator
+from datetime import datetime, timedelta
+import logging
+import yaml
+import os
+
+default_args = {{
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 0,
+}}
+
+config_file = os.path.join(os.path.dirname(__file__), "dag_factory_config_sustained_set_{set_num:02d}.yaml")
+try:
+    with open(config_file, 'r') as f:
+        config = yaml.safe_load(f)
+    num_dags = len(config)
+    first_dag = list(config.values())[0]
+    tasks_per_dag = len([t for t in first_dag['tasks'] if t['task_id'] != 'wave_delay'])
+    total_tasks = num_dags * tasks_per_dag
+except Exception as e:
+    num_dags = {num_dags}
+    tasks_per_dag = {tasks_per_dag}
+    total_tasks = {total_tasks}
+
+dag = DAG(
+    'trigger_dag_factory_sustained_test_set_{set_num:02d}',
+    default_args=default_args,
+    description=f'Master trigger for DAG Factory Sustained Load Test Set {set_num:02d} - {{total_tasks}} peak tasks',
+    schedule=None,
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    max_active_runs=1,
+    is_paused_upon_creation=False,
+    tags=['dag-factory-test', 'sustained-load', 'master-trigger', 'performance', 'long-duration', 'set-{set_num:02d}'],
+)
+
+
+def log_test_start(**context):
+    logger = logging.getLogger(__name__)
+    logger.info("=" * 80)
+    logger.info("DAG FACTORY SUSTAINED LOAD TEST - SET {set_num:02d} - STARTING")
+    logger.info("=" * 80)
+    logger.info(f"  {{num_dags}} DAGs x {{tasks_per_dag}} tasks = {{total_tasks}} peak capacity")
+    logger.info("  Peak duration: {peak_duration} minutes")
+    logger.info("  Total test duration: ~{total_duration} minutes")
+    logger.info("=" * 80)
+    return {{'test_start_time': datetime.now().isoformat()}}
+
+
+def log_test_complete(**context):
+    logger = logging.getLogger(__name__)
+    logger.info("=" * 80)
+    logger.info("DAG FACTORY SUSTAINED LOAD TEST - SET {set_num:02d} - ALL DAGS TRIGGERED")
+    logger.info("=" * 80)
+    logger.info(f"All {{num_dags}} DAGs have been triggered with wave delays")
+    logger.info("=" * 80)
+    return {{'test_trigger_complete': datetime.now().isoformat()}}
+
+
+start_task = PythonOperator(
+    task_id='log_test_start',
+    python_callable=log_test_start,
+    dag=dag,
+)
+
+trigger_tasks = []
+
+for dag_num in range(num_dags):
+    dag_id = f"factory_sustained_set_{set_num:02d}_dag_{{dag_num:03d}}"
+
+    trigger_task = TriggerDagRunOperator(
+        task_id=f'trigger_{{dag_id}}',
+        trigger_dag_id=dag_id,
+        wait_for_completion=False,
+        dag=dag,
+    )
+
+    trigger_tasks.append(trigger_task)
+    start_task >> trigger_task
+
+end_task = PythonOperator(
+    task_id='log_test_complete',
+    python_callable=log_test_complete,
+    dag=dag,
+)
+
+for trigger_task in trigger_tasks:
+    trigger_task >> end_task
+'''
+
+
 def main():
-    """Generate and save YAML configuration"""
+    """Generate and save YAML configuration and trigger DAGs for N sets"""
     parser = argparse.ArgumentParser(
         description='Generate DAG Factory sustained load test configuration',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Generate 2000 peak tasks (default)
+  # Generate 1 set of 65 DAGs (default)
   python generate_dag_factory_sustained.py
-  
-  # Generate 4000 peak tasks
-  python generate_dag_factory_sustained.py --peak-tasks 4000
-  
-  # Custom peak and duration
-  python generate_dag_factory_sustained.py --peak-tasks 3000 --peak-duration 30
+
+  # Generate 2 sets of 65 DAGs (130 DAGs total, 2 master triggers)
+  python generate_dag_factory_sustained.py --sets 2
+
+  # Generate 4000 peak tasks with 3 sets
+  python generate_dag_factory_sustained.py --peak-tasks 4000 --sets 3
         """
     )
     parser.add_argument(
         '--peak-tasks',
         type=int,
         default=2000,
-        help='Peak number of concurrent tasks (default: 2000)'
+        help='Peak number of concurrent tasks per set (default: 2000)'
     )
     parser.add_argument(
         '--peak-duration',
@@ -260,59 +390,90 @@ Examples:
         default=20,
         help='Duration to sustain peak load in minutes (default: 20)'
     )
+    parser.add_argument(
+        '--sets',
+        type=int,
+        default=1,
+        help='Number of sets of 65 DAGs to generate (default: 1)'
+    )
     args = parser.parse_args()
-    
+
     peak_tasks = args.peak_tasks
     peak_duration = args.peak_duration
-    
+    num_sets = args.sets
+
     print(f"Generating sustained load test configuration...")
-    print(f"  Peak tasks: {peak_tasks}")
+    print(f"  Sets: {num_sets}")
+    print(f"  Peak tasks per set: {peak_tasks}")
     print(f"  Peak duration: {peak_duration} minutes")
-    
-    # Generate configuration
-    config, params = generate_full_config(peak_tasks, peak_duration)
-    
-    # Save to YAML file
-    output_file = 'dag_factory_config_sustained.yaml'
-    
-    num_dags = params['num_dags']
-    tasks_per_dag = params['tasks_per_dag']
-    total_duration = params['total_duration']
-    
-    with open(output_file, 'w') as f:
-        # Write header comment
-        f.write("# DAG Factory Sustained Load Test Configuration\n")
-        f.write("# Auto-generated configuration file\n")
-        f.write("#\n")
-        f.write(f"# Sustained Load Test - {peak_tasks} peak tasks\n")
-        f.write("#\n")
-        f.write(f"# Test Pattern ({total_duration} minutes total):\n")
-        f.write(f"# - 0-5 min: Ramp up from 500 → {peak_tasks} tasks\n")
-        f.write(f"# - 5-{5+peak_duration} min: Sustain peak load ({peak_duration} minutes)\n")
-        f.write(f"# - {5+peak_duration}-{total_duration} min: Ramp down {peak_tasks} → 0 tasks\n")
-        f.write("#\n")
-        f.write(f"# Configuration:\n")
-        f.write(f"# - {num_dags} DAGs × {tasks_per_dag} tasks = {num_dags * tasks_per_dag} peak capacity\n")
-        f.write(f"# - Task duration: 20 minutes\n")
-        f.write(f"# - Peak sustained: {peak_duration} minutes\n")
-        f.write(f"# - Total test duration: ~{total_duration} minutes\n")
-        f.write("#\n")
-        f.write("# Wave Pattern:\n")
-        for wave in params['waves']:
-            f.write(f"# - Wave {wave['wave']}: T+{wave['delay_minutes']}min - {wave['description']}\n")
-        f.write("#\n\n")
-        
-        # Write YAML configuration
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-    
-    print(f"✅ Configuration saved to {output_file}")
-    print(f"   - {num_dags} DAGs generated")
-    print(f"   - {tasks_per_dag} tasks per DAG")
-    print(f"   - {peak_tasks} peak concurrent tasks")
-    print(f"   - {peak_duration} minute peak duration")
-    print(f"   - ~{total_duration} minute total test duration")
+
+    for set_num in range(1, num_sets + 1):
+        print(f"\n--- Set {set_num:02d} ---")
+
+        # Generate configuration for this set
+        config, params = generate_full_config(peak_tasks, peak_duration, set_num=set_num)
+
+        num_dags = params['num_dags']
+        tasks_per_dag = params['tasks_per_dag']
+        total_duration = params['total_duration']
+        total_tasks = num_dags * tasks_per_dag
+
+        # Save YAML config file
+        config_file = f'dag_factory_config_sustained_set_{set_num:02d}.yaml'
+        with open(config_file, 'w') as f:
+            f.write(f"# DAG Factory Sustained Load Test Configuration - Set {set_num:02d}\n")
+            f.write("# Auto-generated configuration file\n")
+            f.write("#\n")
+            f.write(f"# Sustained Load Test - {peak_tasks} peak tasks\n")
+            f.write("#\n")
+            f.write(f"# Test Pattern ({total_duration} minutes total):\n")
+            f.write(f"# - 0-5 min: Ramp up from 500 → {peak_tasks} tasks\n")
+            f.write(f"# - 5-{5+peak_duration} min: Sustain peak load ({peak_duration} minutes)\n")
+            f.write(f"# - {5+peak_duration}-{total_duration} min: Ramp down {peak_tasks} → 0 tasks\n")
+            f.write("#\n")
+            f.write(f"# Configuration:\n")
+            f.write(f"# - Set {set_num:02d}: {num_dags} DAGs × {tasks_per_dag} tasks = {total_tasks} peak capacity\n")
+            f.write(f"# - Task duration: 20 minutes\n")
+            f.write(f"# - Peak sustained: {peak_duration} minutes\n")
+            f.write(f"# - Total test duration: ~{total_duration} minutes\n")
+            f.write("#\n")
+            f.write("# Wave Pattern:\n")
+            for wave in params['waves']:
+                f.write(f"# - Wave {wave['wave']}: T+{wave['delay_minutes']}min - {wave['description']}\n")
+            f.write("#\n\n")
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+        print(f"  ✅ Config saved to {config_file}")
+        print(f"     - {num_dags} DAGs generated")
+        print(f"     - {tasks_per_dag} tasks per DAG")
+
+        # Generate master trigger DAG file
+        trigger_file = f'trigger_dag_factory_sustained_set_{set_num:02d}.py'
+        trigger_content = generate_trigger_dag(
+            set_num=set_num,
+            num_dags=num_dags,
+            tasks_per_dag=tasks_per_dag,
+            total_tasks=total_tasks,
+            peak_tasks=peak_tasks,
+            peak_duration=peak_duration,
+            total_duration=total_duration,
+            waves=params['waves'],
+        )
+        with open(trigger_file, 'w') as f:
+            f.write(trigger_content)
+
+        print(f"  ✅ Trigger DAG saved to {trigger_file}")
+
+    total_dags = num_sets * 65
+    print(f"\n{'='*60}")
+    print(f"Summary:")
+    print(f"  {num_sets} set(s) × 65 DAGs = {total_dags} DAGs total")
+    print(f"  {num_sets} master trigger DAG(s)")
+    print(f"  {peak_tasks} peak tasks per set")
+    print(f"  ~{total_duration} minute total test duration per set")
     print(f"\n⚠️  WARNING: This is a long-running test ({total_duration} minutes)!")
     print(f"   Make sure your MWAA environment can handle sustained load.")
+
 
 
 if __name__ == '__main__':
