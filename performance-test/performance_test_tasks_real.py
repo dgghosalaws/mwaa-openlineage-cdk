@@ -42,43 +42,52 @@ def real_load_task(
     duration: int,
     wave_num: int,
     dag_num: int,
-    batch_num: int = 0,
+    total_duration: int = 0,
     **context
 ):
     """
     Individual load task that creates REAL concurrent execution.
     
-    This is a real Airflow task that consumes a worker slot.
-    When many of these run simultaneously, they create actual load.
+    Runs in a loop: sleeps for `duration` seconds, then repeats until
+    `total_duration` is reached. This sustains load with short-lived
+    sleep cycles while keeping YAML configs small.
     
     Args:
         task_id: Task identifier
-        duration: How long the task should run (seconds)
+        duration: How long each cycle sleeps (seconds)
         wave_num: Wave number for logging
         dag_num: DAG number for logging
-        batch_num: Batch number within the DAG
+        total_duration: Total time this task should run (seconds). If 0, runs once.
     """
     logger = logging.getLogger(__name__)
     start_time = time.time()
     
-    # Log start (only for first and last task to reduce noise)
-    if task_id == 0 or task_id % 10 == 9:  # Log every 10th task
-        logger.info(
-            f"Wave {wave_num} - DAG {dag_num} - Batch {batch_num} - Task {task_id} started "
-            f"(duration: {duration}s)"
-        )
+    # If no total_duration, run a single cycle
+    if total_duration <= 0:
+        total_duration = duration
+
+    cycle = 0
+    elapsed = 0
+    while elapsed < total_duration:
+        remaining = total_duration - elapsed
+        sleep_time = min(duration, remaining)
+        
+        if task_id == 0 or task_id % 10 == 9:
+            logger.info(
+                f"Wave {wave_num} - DAG {dag_num} - Task {task_id} - "
+                f"Cycle {cycle} started (sleep: {sleep_time}s, elapsed: {elapsed:.0f}s/{total_duration}s)"
+            )
+        
+        time.sleep(sleep_time)
+        cycle += 1
+        elapsed = time.time() - start_time
     
-    # Simulate work
-    time.sleep(duration)
+    actual_duration = time.time() - start_time
     
-    end_time = time.time()
-    actual_duration = end_time - start_time
-    
-    # Log completion (only for first and last task)
     if task_id == 0 or task_id % 10 == 9:
         logger.info(
-            f"Wave {wave_num} - DAG {dag_num} - Batch {batch_num} - Task {task_id} completed in "
-            f"{actual_duration:.1f}s"
+            f"Wave {wave_num} - DAG {dag_num} - Task {task_id} completed "
+            f"{cycle} cycles in {actual_duration:.1f}s"
         )
     
     return {
@@ -86,6 +95,7 @@ def real_load_task(
         'dag_num': dag_num,
         'task_id': task_id,
         'duration': actual_duration,
+        'cycles': cycle,
         'start_time': start_time,
-        'end_time': end_time
+        'end_time': time.time()
     }

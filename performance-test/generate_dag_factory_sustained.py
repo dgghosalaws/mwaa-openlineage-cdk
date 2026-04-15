@@ -139,6 +139,7 @@ def calculate_wave_config(peak_tasks: int, peak_duration: int = 20) -> Dict:
 
 
 
+
 def generate_dag_config(
     dag_num: int,
     wave_config: Dict,
@@ -147,28 +148,23 @@ def generate_dag_config(
     task_duration_secs: int = 120,
 ) -> Dict:
     """
-    Generate configuration for a single DAG with batched short-lived tasks.
+    Generate configuration for a single DAG with looping tasks.
 
-    Instead of long-running tasks, generates sequential batches of parallel tasks.
-    Each batch has `tasks_per_dag` parallel tasks, each running for `task_duration_secs`.
-    Batches are chained to sustain load for the full wave duration.
+    Each task internally loops: sleeps for task_duration_secs, repeats until
+    the wave duration is met. This keeps YAML small (one task definition per
+    parallel slot) while sustaining load for the full wave duration.
 
     Args:
         dag_num: DAG number (0-based)
         wave_config: Wave configuration for this DAG
-        tasks_per_dag: Number of parallel tasks per batch
+        tasks_per_dag: Number of parallel tasks
         set_num: Set number (1-based)
-        task_duration_secs: Duration of each individual task in seconds
+        task_duration_secs: Duration of each sleep cycle in seconds
     """
-    import math
-
     dag_id = f"factory_sustained_set_{set_num:02d}_dag_{dag_num:03d}"
     wave_num = wave_config['wave']
     delay_seconds = wave_config['delay_minutes'] * 60
-    wave_duration_secs = wave_config['task_duration'] * 60  # total wave duration in seconds
-
-    # Calculate number of sequential batches needed to sustain load
-    num_batches = max(1, math.ceil(wave_duration_secs / task_duration_secs))
+    total_duration_secs = wave_config['task_duration'] * 60
 
     # Build tasks list
     tasks_list = [
@@ -184,51 +180,22 @@ def generate_dag_config(
         }
     ]
 
-    # Create a sync task between each batch to gate the next batch
-    for batch in range(num_batches):
-        # Dependency: first batch depends on wave_delay, subsequent batches depend on previous sync task
-        if batch == 0:
-            batch_dependency = 'wave_delay'
-        else:
-            batch_dependency = f'sync_batch_{batch - 1:02d}'
-
-        # Parallel tasks within this batch
-        batch_task_ids = []
-        for task_id in range(tasks_per_dag):
-            tid = f'b{batch:02d}_task_{task_id:02d}'
-            task = {
-                'task_id': tid,
-                'operator': 'airflow.operators.python.PythonOperator',
-                'python_callable_name': 'real_load_task',
-                'python_callable_file': '/usr/local/airflow/dags/performance_test_tasks_real.py',
-                'op_kwargs': {
-                    'task_id': task_id,
-                    'duration': task_duration_secs,
-                    'wave_num': wave_num,
-                    'dag_num': dag_num,
-                    'batch_num': batch,
-                },
-                'dependencies': [batch_dependency]
-            }
-            tasks_list.append(task)
-            batch_task_ids.append(tid)
-
-        # Add sync task that waits for all tasks in this batch before next batch starts
-        if batch < num_batches - 1:
-            sync_task = {
-                'task_id': f'sync_batch_{batch:02d}',
-                'operator': 'airflow.operators.python.PythonOperator',
-                'python_callable_name': 'wave_delay_task',
-                'python_callable_file': '/usr/local/airflow/dags/performance_test_tasks_real.py',
-                'op_kwargs': {
-                    'wave_num': wave_num,
-                    'delay_seconds': 0,
-                },
-                'dependencies': batch_task_ids
-            }
-            tasks_list.append(sync_task)
-
-    total_tasks_in_dag = num_batches * tasks_per_dag
+    for task_id in range(tasks_per_dag):
+        task = {
+            'task_id': f'load_task_{task_id:02d}',
+            'operator': 'airflow.operators.python.PythonOperator',
+            'python_callable_name': 'real_load_task',
+            'python_callable_file': '/usr/local/airflow/dags/performance_test_tasks_real.py',
+            'op_kwargs': {
+                'task_id': task_id,
+                'duration': task_duration_secs,
+                'total_duration': total_duration_secs,
+                'wave_num': wave_num,
+                'dag_num': dag_num,
+            },
+            'dependencies': ['wave_delay']
+        }
+        tasks_list.append(task)
 
     return {
         dag_id: {
@@ -239,7 +206,7 @@ def generate_dag_config(
                 'email_on_retry': False,
                 'retries': 0,
             },
-            'description': f'Sustained Load Test - Set {set_num:02d} - DAG {dag_num:03d} - Wave {wave_num} - {num_batches} batches × {tasks_per_dag} tasks @ {task_duration_secs}s',
+            'description': f'Sustained Load Test - Set {set_num:02d} - DAG {dag_num:03d} - Wave {wave_num} - {tasks_per_dag} tasks @ {task_duration_secs}s cycles for {total_duration_secs}s',
             'schedule': None,
             'catchup': False,
             'max_active_runs': 1,
@@ -249,6 +216,7 @@ def generate_dag_config(
             'tasks': tasks_list
         }
     }
+
 
 
 
@@ -287,13 +255,10 @@ def generate_full_config(peak_tasks: int = 2000, peak_duration: int = 20, set_nu
 
 
 
+
 def generate_trigger_dag(set_num: int, num_dags: int, tasks_per_dag: int, total_tasks: int,
                          peak_tasks: int, peak_duration: int, total_duration: int, waves: list) -> str:
     """Generate the master trigger DAG Python file content for a given set."""
-    wave_log_lines = ""
-    for wave in waves:
-        wave_log_lines += f'    logger.info("  - Wave {wave["wave"]}: T+{wave["delay_minutes"]}min - {wave["description"]}")\n'
-
     return f'''"""
 Master Trigger DAG for DAG Factory Sustained Load Test - Set {set_num:02d}
 
@@ -309,10 +274,8 @@ Configuration:
 from airflow import DAG
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.operators.python import PythonOperator
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
-import yaml
-import os
 
 default_args = {{
     'owner': 'airflow',
@@ -322,18 +285,9 @@ default_args = {{
     'retries': 0,
 }}
 
-config_file = os.path.join(os.path.dirname(__file__), "dag_factory_config_sustained_set_{set_num:02d}.yaml")
-try:
-    with open(config_file, 'r') as f:
-        config = yaml.safe_load(f)
-    num_dags = len(config)
-    first_dag = list(config.values())[0]
-    tasks_per_dag = len([t for t in first_dag['tasks'] if t['task_id'] != 'wave_delay'])
-    total_tasks = num_dags * tasks_per_dag
-except Exception as e:
-    num_dags = {num_dags}
-    tasks_per_dag = {tasks_per_dag}
-    total_tasks = {total_tasks}
+num_dags = {num_dags}
+tasks_per_dag = {tasks_per_dag}
+total_tasks = {total_tasks}
 
 dag = DAG(
     'trigger_dag_factory_sustained_test_set_{set_num:02d}',
@@ -402,8 +356,10 @@ for trigger_task in trigger_tasks:
 '''
 
 
+
+
 def main():
-    """Generate and save YAML configuration and trigger DAGs for N sets"""
+    """Generate and save per-DAG YAML configs and trigger DAGs for N sets"""
     parser = argparse.ArgumentParser(
         description='Generate DAG Factory sustained load test configuration',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -450,6 +406,9 @@ Examples:
     num_sets = args.sets
     task_duration_secs = args.task_duration
 
+    # Output directory for per-DAG YAML configs
+    configs_dir = 'configs'
+
     print(f"Generating sustained load test configuration...")
     print(f"  Sets: {num_sets}")
     print(f"  Peak tasks per set: {peak_tasks}")
@@ -459,6 +418,10 @@ Examples:
     for set_num in range(1, num_sets + 1):
         print(f"\n--- Set {set_num:02d} ---")
 
+        # Create per-set config directory
+        set_dir = os.path.join(configs_dir, f'set_{set_num:02d}')
+        os.makedirs(set_dir, exist_ok=True)
+
         # Generate configuration for this set
         config, params = generate_full_config(peak_tasks, peak_duration, set_num=set_num, task_duration_secs=task_duration_secs)
 
@@ -467,34 +430,34 @@ Examples:
         total_duration = params['total_duration']
         total_tasks = num_dags * tasks_per_dag
 
-        # Save YAML config file
-        config_file = f'dag_factory_config_sustained_set_{set_num:02d}.yaml'
-        with open(config_file, 'w') as f:
-            f.write(f"# DAG Factory Sustained Load Test Configuration - Set {set_num:02d}\n")
-            f.write("# Auto-generated configuration file\n")
-            f.write("#\n")
-            f.write(f"# Sustained Load Test - {peak_tasks} peak tasks\n")
-            f.write("#\n")
-            f.write(f"# Test Pattern ({total_duration} minutes total):\n")
-            f.write(f"# - 0-5 min: Ramp up from 500 → {peak_tasks} tasks\n")
-            f.write(f"# - 5-{5+peak_duration} min: Sustain peak load ({peak_duration} minutes)\n")
-            f.write(f"# - {5+peak_duration}-{total_duration} min: Ramp down {peak_tasks} → 0 tasks\n")
-            f.write("#\n")
-            f.write(f"# Configuration:\n")
-            f.write(f"# - Set {set_num:02d}: {num_dags} DAGs × {tasks_per_dag} tasks = {total_tasks} peak capacity\n")
-            f.write(f"# - Task duration: 20 minutes\n")
-            f.write(f"# - Peak sustained: {peak_duration} minutes\n")
-            f.write(f"# - Total test duration: ~{total_duration} minutes\n")
-            f.write("#\n")
-            f.write("# Wave Pattern:\n")
-            for wave in params['waves']:
-                f.write(f"# - Wave {wave['wave']}: T+{wave['delay_minutes']}min - {wave['description']}\n")
-            f.write("#\n\n")
-            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        # Write one YAML file per DAG for fast Airflow parsing
+        dag_count = 0
+        for dag_id, dag_config in config.items():
+            dag_file = os.path.join(set_dir, f'{dag_id}.yaml')
+            with open(dag_file, 'w') as f:
+                yaml.dump({dag_id: dag_config}, f, default_flow_style=False, sort_keys=False)
+            dag_count += 1
 
-        print(f"  ✅ Config saved to {config_file}")
-        print(f"     - {num_dags} DAGs generated")
-        print(f"     - {tasks_per_dag} tasks per DAG")
+        print(f"  ✅ {dag_count} YAML configs saved to {set_dir}/")
+        print(f"     - {tasks_per_dag} parallel tasks per batch")
+
+        # Generate per-set DAG loader file
+        loader_file = f'dag_factory_sustained_set_{set_num:02d}.py'
+        loader_content = f'''"""
+DAG Factory loader for sustained load test - Set {set_num:02d}
+"""
+
+from airflow import DAG  # noqa: F401 - required for Airflow DAG discovery
+from dagfactory import load_yaml_dags
+import os
+
+config_dir = os.path.join(os.path.dirname(__file__), "configs", "set_{set_num:02d}")
+load_yaml_dags(dags_folder=config_dir, globals_dict=globals())
+'''
+        with open(loader_file, 'w') as f:
+            f.write(loader_content)
+
+        print(f"  ✅ DAG loader saved to {loader_file}")
 
         # Generate master trigger DAG file
         trigger_file = f'trigger_dag_factory_sustained_set_{set_num:02d}.py'
@@ -522,6 +485,7 @@ Examples:
     print(f"  ~{total_duration} minute total test duration per set")
     print(f"\n⚠️  WARNING: This is a long-running test ({total_duration} minutes)!")
     print(f"   Make sure your MWAA environment can handle sustained load.")
+
 
 
 

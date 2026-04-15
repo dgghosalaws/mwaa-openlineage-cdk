@@ -1,5 +1,6 @@
 # Generated files (created by generate_dag_factory_sustained.py)
-dag_factory_config_sustained_set_*.yaml
+configs/
+dag_factory_sustained_set_*.py
 trigger_dag_factory_sustained_set_*.py
 *.pyc
 __pycache__/
