@@ -14,6 +14,7 @@ Generates and runs sustained load tests on MWAA using [dag-factory](https://astr
 |------|-------------|
 | `generate_dag_factory_sustained.py` | Generator — produces per-DAG YAML configs, per-set loaders, and trigger DAGs |
 | `performance_test_tasks_real.py` | Task implementations (`wave_delay_task`, `real_load_task`) |
+| `soak_test_report_dag.py` | Report DAG — trigger after test to get run states and duration stats |
 | `upload_sustained_test.sh` | Uploads all generated files to your MWAA S3 bucket |
 
 ## Generated Files (not checked in)
@@ -90,6 +91,16 @@ python generate_dag_factory_sustained.py --sets 2 --task-duration 60
 2. In the Airflow UI, find the master trigger DAGs (tag: `master-trigger`)
 3. Trigger all sets simultaneously for maximum parallel load
 4. Monitor CloudWatch for ~40 minutes
+
+### 4. Generate report
+
+After the test completes, trigger the `soak_test_report` DAG in the Airflow UI. Pass the number of sets in the config:
+
+```json
+{"sets": 2}
+```
+
+The report logs DAG run states, failed task details, and duration stats. Check the task log for the output.
 
 ## CLI Reference
 

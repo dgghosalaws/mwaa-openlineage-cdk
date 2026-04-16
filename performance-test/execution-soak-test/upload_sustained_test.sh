@@ -16,6 +16,10 @@ echo ""
 echo "Uploading task functions..."
 aws s3 cp performance_test_tasks_real.py s3://${BUCKET}/dags/ --region ${REGION}
 
+# Upload report DAG
+echo "Uploading report DAG..."
+aws s3 cp soak_test_report_dag.py s3://${BUCKET}/dags/ --region ${REGION}
+
 # Upload per-set DAG loaders
 LOADER_COUNT=0
 for loader_file in dag_factory_sustained_set_*.py; do
