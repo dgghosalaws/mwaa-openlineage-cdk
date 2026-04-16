@@ -14,6 +14,7 @@ from aws_cdk import (
     Stack,
     aws_cloudwatch as cloudwatch,
     CfnOutput,
+    Duration,
 )
 from constructs import Construct
 
@@ -119,6 +120,49 @@ class MwaaMonitoringStack(Stack):
         )
 
         dashboard.add_widgets(worker_cpu_widget, worker_memory_widget)
+
+        # ========================================
+        # Row 1.5: Worker Count (Auto-scaling)
+        # ========================================
+
+        # Worker count via SampleCount on CPUUtilization
+        worker_count_widget = cloudwatch.GraphWidget(
+            title="Worker Count (Auto-scaling)",
+            left=[
+                cloudwatch.Metric(
+                    namespace="AWS/MWAA",
+                    metric_name="CPUUtilization",
+                    dimensions_map={
+                        "Environment": mwaa_environment_name,
+                        "Cluster": "BaseWorker"
+                    },
+                    statistic="SampleCount",
+                    period=Duration.minutes(1),
+                    label="Base Workers",
+                    color=cloudwatch.Color.BLUE,
+                ),
+                cloudwatch.Metric(
+                    namespace="AWS/MWAA",
+                    metric_name="CPUUtilization",
+                    dimensions_map={
+                        "Environment": mwaa_environment_name,
+                        "Cluster": "AdditionalWorker"
+                    },
+                    statistic="SampleCount",
+                    period=Duration.minutes(1),
+                    label="Additional Workers",
+                    color=cloudwatch.Color.GREEN,
+                ),
+            ],
+            left_y_axis=cloudwatch.YAxisProps(
+                label="Worker Count",
+                min=0,
+            ),
+            width=24,
+            height=6,
+        )
+
+        dashboard.add_widgets(worker_count_widget)
 
         # ========================================
         # Row 2: Queue Metrics

@@ -57,7 +57,10 @@ Time              Load
 ```bash
 cd performance-test/execution-soak-test
 
-# 30-min test, 3600 peak tasks, 20-min peak (used for perf-test cluster validation)
+# 3200 peak tasks, 20-min DAG runs, 15-min sleep cycles, 36-min total
+python generate_dag_factory_sustained.py --sets 1 --peak-tasks 3200 --peak-duration 20 --total-duration 36 --task-duration 900 --dag-duration 20
+
+# 3600 peak tasks, 20-min peak, 30-min total (wave-calculated DAG durations)
 python generate_dag_factory_sustained.py --sets 1 --peak-tasks 3600 --peak-duration 20 --total-duration 30
 
 # Default: 40-min test, 2000 peak tasks, 20-min peak
@@ -110,14 +113,16 @@ Options:
   --total-duration INT   Total test duration in minutes (default: 40)
   --sets INT             Number of sets of 65 DAGs (default: 1)
   --task-duration INT    Sleep cycle per task in seconds (default: 120)
+  --dag-duration INT     Fixed DAG run duration in minutes, overrides wave
+                         durations (default: 0 = use wave-calculated durations)
 ```
 
 ## Scaling Examples
 
-| Sets | Peak Tasks/Set | Tasks/DAG | Concurrent Tasks | Total Duration |
-|------|----------------|-----------|------------------|----------------|
-| 1    | 3600           | 55        | ~3575            | 30 min         |
-| 1    | 2000           | 30        | ~1950            | 40 min         |
-| 2    | 2000           | 30        | ~3900            | 40 min         |
-| 2    | 2080           | 32        | ~4160            | 40 min         |
-| 1    | 2000           | 30        | ~1950            | 60 min         |
+| Sets | Peak Tasks/Set | Tasks/DAG | Concurrent Tasks | Total Duration | DAG Duration |
+|------|----------------|-----------|------------------|----------------|--------------|
+| 1    | 3200           | 49        | ~3185            | 36 min         | 20 min fixed |
+| 1    | 3600           | 55        | ~3575            | 30 min         | wave-calc    |
+| 1    | 2000           | 30        | ~1950            | 40 min         | wave-calc    |
+| 2    | 2000           | 30        | ~3900            | 40 min         | wave-calc    |
+| 2    | 2080           | 32        | ~4160            | 40 min         | wave-calc    |

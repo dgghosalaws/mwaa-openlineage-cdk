@@ -148,6 +148,7 @@ def generate_dag_config(
     tasks_per_dag: int,
     set_num: int = 1,
     task_duration_secs: int = 120,
+    dag_duration_secs: int = 0,
 ) -> Dict:
     """
     Generate configuration for a single DAG with looping tasks.
@@ -166,7 +167,7 @@ def generate_dag_config(
     dag_id = f"factory_sustained_set_{set_num:02d}_dag_{dag_num:03d}"
     wave_num = wave_config['wave']
     delay_seconds = wave_config['delay_minutes'] * 60
-    total_duration_secs = wave_config['task_duration'] * 60
+    total_duration_secs = dag_duration_secs if dag_duration_secs > 0 else wave_config['task_duration'] * 60
 
     # Build tasks list
     tasks_list = [
@@ -222,7 +223,7 @@ def generate_dag_config(
 
 
 
-def generate_full_config(peak_tasks: int = 2000, peak_duration: int = 20, set_num: int = 1, task_duration_secs: int = 120, total_duration: int = 40) -> tuple:
+def generate_full_config(peak_tasks: int = 2000, peak_duration: int = 20, set_num: int = 1, task_duration_secs: int = 120, total_duration: int = 40, dag_duration_secs: int = 0) -> tuple:
     """Generate complete YAML configuration for a single set of sustained load test DAGs"""
     config_dict = {}
     
@@ -250,6 +251,7 @@ def generate_full_config(peak_tasks: int = 2000, peak_duration: int = 20, set_nu
                 tasks_per_dag=tasks_per_dag,
                 set_num=set_num,
                 task_duration_secs=task_duration_secs,
+                dag_duration_secs=dag_duration_secs,
             )
             config_dict.update(dag_config)
     
@@ -407,6 +409,12 @@ Examples:
         default=40,
         help='Total test duration in minutes (default: 40)'
     )
+    parser.add_argument(
+        '--dag-duration',
+        type=int,
+        default=0,
+        help='Fixed DAG run duration in minutes, overrides wave-calculated durations (default: 0 = use wave durations)'
+    )
     args = parser.parse_args()
 
     peak_tasks = args.peak_tasks
@@ -414,6 +422,7 @@ Examples:
     num_sets = args.sets
     task_duration_secs = args.task_duration
     total_duration = args.total_duration
+    dag_duration_secs = args.dag_duration * 60  # convert to seconds
 
     # Output directory for per-DAG YAML configs
     configs_dir = 'configs'
@@ -424,6 +433,8 @@ Examples:
     print(f"  Peak duration: {peak_duration} minutes")
     print(f"  Total duration: {total_duration} minutes")
     print(f"  Task duration: {task_duration_secs} seconds")
+    if dag_duration_secs > 0:
+        print(f"  DAG run duration: {dag_duration_secs // 60} minutes (fixed)")
 
     for set_num in range(1, num_sets + 1):
         print(f"\n--- Set {set_num:02d} ---")
@@ -433,7 +444,7 @@ Examples:
         os.makedirs(set_dir, exist_ok=True)
 
         # Generate configuration for this set
-        config, params = generate_full_config(peak_tasks, peak_duration, set_num=set_num, task_duration_secs=task_duration_secs, total_duration=total_duration)
+        config, params = generate_full_config(peak_tasks, peak_duration, set_num=set_num, task_duration_secs=task_duration_secs, total_duration=total_duration, dag_duration_secs=dag_duration_secs)
 
         num_dags = params['num_dags']
         tasks_per_dag = params['tasks_per_dag']
