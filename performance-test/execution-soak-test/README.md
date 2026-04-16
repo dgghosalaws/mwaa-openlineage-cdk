@@ -82,7 +82,7 @@ python generate_dag_factory_sustained.py --sets 2 --task-duration 60
 ./upload_sustained_test.sh <your-mwaa-bucket> [region]
 
 # Example
-./upload_sustained_test.sh perf-test-834811675783 us-east-2
+./upload_sustained_test.sh <your-mwaa-bucket> us-east-2
 ```
 
 ### 3. Run the test
