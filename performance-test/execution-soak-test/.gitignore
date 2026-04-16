@@ -1,6 +1,11 @@
 # Generated files (created by generate_dag_factory_sustained.py)
 configs/
+soak_configs/
 dag_factory_sustained_set_*.py
 trigger_dag_factory_sustained_set_*.py
+soak_loader_*.py
+soak_tasks.py
+soak_test_trigger.py
+soak_test_stop.py
 *.pyc
 __pycache__/

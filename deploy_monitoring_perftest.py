@@ -8,11 +8,11 @@ app = cdk.App()
 MwaaMonitoringStack(
     app,
     "perf-test-monitoring",
-    mwaa_environment_name="Performance-test",
+    mwaa_environment_name="perf-test",
     project_name="perf-test",
     environment="dev",
     env=cdk.Environment(account="834811675783", region="us-east-2"),
-    description="CloudWatch dashboard for Performance-test MWAA cluster",
+    description="CloudWatch dashboard for perf-test MWAA cluster",
 )
 
 app.synth()

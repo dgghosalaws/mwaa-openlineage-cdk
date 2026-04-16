@@ -29,113 +29,115 @@ import os
 from typing import Dict, List
 
 
-def calculate_wave_config(peak_tasks: int, peak_duration: int = 20) -> Dict:
+
+def calculate_wave_config(peak_tasks: int, peak_duration: int = 20, total_duration: int = 40) -> Dict:
     """
     Calculate wave configuration for sustained load test.
-    
+
     Args:
         peak_tasks: Target peak concurrent tasks
         peak_duration: How long to sustain peak (minutes)
-    
+        total_duration: Total test duration (minutes). Must be >= peak_duration + 10.
+
     Returns:
         Configuration with wave timings and task counts
     """
+    # Derive ramp-up and ramp-down from total duration
+    # Ramp-up: 5 min fixed
+    # Peak: peak_duration
+    # Ramp-down: remainder
+    ramp_up = 5
+    ramp_down = total_duration - ramp_up - peak_duration
+    if ramp_down < 5:
+        ramp_down = 5
+        total_duration = ramp_up + peak_duration + ramp_down
+
     # Use 65 DAGs (scheduler throughput limit)
     num_dags = 65
-    
+
     # Calculate tasks per DAG at peak
     tasks_per_dag_peak = peak_tasks // num_dags
-    
-    # Wave configuration
-    # Wave 1: 500 tasks (baseline)
-    # Wave 2: 1000 tasks (50% to peak)
-    # Wave 3: 1500 tasks (75% to peak)
-    # Wave 4-N: Peak tasks (sustained)
-    # Wave N+1: Ramp down
-    
+
     tasks_wave1 = 500
     tasks_wave2 = peak_tasks // 2
     tasks_wave3 = int(peak_tasks * 0.75)
-    
+
     # Calculate how many DAGs needed for each wave
     dags_wave1 = tasks_wave1 // tasks_per_dag_peak or 1
     dags_wave2 = tasks_wave2 // tasks_per_dag_peak or 1
     dags_wave3 = tasks_wave3 // tasks_per_dag_peak or 1
-    
+
     # Remaining DAGs for peak
     dags_peak = num_dags - dags_wave3
-    
+
     # Calculate number of peak waves (one every 5 minutes)
     num_peak_waves = peak_duration // 5
-    
+
     waves = []
-    
-    # Calculate task durations to achieve proper ramp-down
-    # Goal: All tasks overlap during peak (T+5 to T+25), then finish gradually (T+25 to T+40)
-    # 
-    # Wave 1: starts T+0, finishes T+25 (25 min) - first to finish
-    # Wave 2: starts T+2, finishes T+30 (28 min) - ramp-down continues
-    # Wave 3: starts T+4, finishes T+35 (31 min) - ramp-down continues
-    # Wave 4+: start T+5-20, finish T+40 (35 min) - last to finish
-    
-    # Ramp up waves with staggered finish times for ramp-down
+
+    # Wave task durations calculated so all finish within total_duration:
+    # Wave 1: starts T+0, finishes at start of ramp-down
+    # Wave 2: starts T+2, finishes at mid ramp-down
+    # Wave 3: starts T+4, finishes at late ramp-down
+    # Wave 4+: start T+5..., finish at total_duration
+    ramp_down_start = ramp_up + peak_duration
+
     waves.append({
         'wave': 1,
         'dag_start': 0,
         'dag_count': dags_wave1,
         'delay_minutes': 0,
-        'task_duration': 25,  # Finish at T+25 (start of ramp-down)
+        'task_duration': ramp_down_start,
         'description': f'Baseline - {tasks_wave1} tasks'
     })
-    
+
     waves.append({
         'wave': 2,
         'dag_start': dags_wave1,
         'dag_count': dags_wave2 - dags_wave1,
         'delay_minutes': 2,
-        'task_duration': 28,  # Finish at T+30 (mid ramp-down)
+        'task_duration': ramp_down_start + (ramp_down // 3),
         'description': f'Ramp to 50% - {tasks_wave2} tasks'
     })
-    
+
     waves.append({
         'wave': 3,
         'dag_start': dags_wave2,
         'dag_count': dags_wave3 - dags_wave2,
         'delay_minutes': 4,
-        'task_duration': 31,  # Finish at T+35 (late ramp-down)
+        'task_duration': ramp_down_start + (2 * ramp_down // 3),
         'description': f'Ramp to 75% - {tasks_wave3} tasks'
     })
-    
-    # Peak waves - longest tasks to finish last (creating final ramp-down)
-    # Distribute remaining DAGs evenly, with the last wave absorbing any remainder
+
+    # Peak waves - finish at total_duration
     current_dag = dags_wave3
     dags_per_peak_wave = dags_peak // num_peak_waves
     for i in range(num_peak_waves):
         wave_num = 4 + i
         if i == num_peak_waves - 1:
-            # Last peak wave gets all remaining DAGs
             dags_this_wave = num_dags - current_dag
         else:
             dags_this_wave = min(dags_per_peak_wave, num_dags - current_dag)
-        
+
         waves.append({
             'wave': wave_num,
             'dag_start': current_dag,
             'dag_count': dags_this_wave,
-            'delay_minutes': 5 + (i * 5),
-            'task_duration': 35,  # Finish at T+40 (end of test)
+            'delay_minutes': ramp_up + (i * 5),
+            'task_duration': total_duration - ramp_up - (i * 5),
             'description': f'Peak sustained - {peak_tasks} tasks'
         })
         current_dag += dags_this_wave
-    
+
     return {
         'num_dags': num_dags,
         'tasks_per_dag': tasks_per_dag_peak,
         'peak_tasks': peak_tasks,
         'peak_duration': peak_duration,
         'waves': waves,
-        'total_duration': 40
+        'total_duration': total_duration
     }
+
 
 
 
@@ -220,12 +222,12 @@ def generate_dag_config(
 
 
 
-def generate_full_config(peak_tasks: int = 2000, peak_duration: int = 20, set_num: int = 1, task_duration_secs: int = 120) -> tuple:
+def generate_full_config(peak_tasks: int = 2000, peak_duration: int = 20, set_num: int = 1, task_duration_secs: int = 120, total_duration: int = 40) -> tuple:
     """Generate complete YAML configuration for a single set of sustained load test DAGs"""
     config_dict = {}
     
     # Calculate wave configuration
-    wave_params = calculate_wave_config(peak_tasks, peak_duration)
+    wave_params = calculate_wave_config(peak_tasks, peak_duration, total_duration)
     
     num_dags = wave_params['num_dags']
     tasks_per_dag = wave_params['tasks_per_dag']
@@ -399,12 +401,19 @@ Examples:
         default=120,
         help='Duration of each individual task in seconds (default: 120)'
     )
+    parser.add_argument(
+        '--total-duration',
+        type=int,
+        default=40,
+        help='Total test duration in minutes (default: 40)'
+    )
     args = parser.parse_args()
 
     peak_tasks = args.peak_tasks
     peak_duration = args.peak_duration
     num_sets = args.sets
     task_duration_secs = args.task_duration
+    total_duration = args.total_duration
 
     # Output directory for per-DAG YAML configs
     configs_dir = 'configs'
@@ -413,6 +422,7 @@ Examples:
     print(f"  Sets: {num_sets}")
     print(f"  Peak tasks per set: {peak_tasks}")
     print(f"  Peak duration: {peak_duration} minutes")
+    print(f"  Total duration: {total_duration} minutes")
     print(f"  Task duration: {task_duration_secs} seconds")
 
     for set_num in range(1, num_sets + 1):
@@ -423,7 +433,7 @@ Examples:
         os.makedirs(set_dir, exist_ok=True)
 
         # Generate configuration for this set
-        config, params = generate_full_config(peak_tasks, peak_duration, set_num=set_num, task_duration_secs=task_duration_secs)
+        config, params = generate_full_config(peak_tasks, peak_duration, set_num=set_num, task_duration_secs=task_duration_secs, total_duration=total_duration)
 
         num_dags = params['num_dags']
         tasks_per_dag = params['tasks_per_dag']

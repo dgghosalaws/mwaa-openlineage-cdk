@@ -14,7 +14,7 @@ Generates and runs sustained load tests on MWAA using [dag-factory](https://astr
 |------|-------------|
 | `generate_dag_factory_sustained.py` | Generator — produces per-DAG YAML configs, per-set loaders, and trigger DAGs |
 | `performance_test_tasks_real.py` | Task implementations (`wave_delay_task`, `real_load_task`) |
-| `soak_test_report_dag.py` | Report DAG — trigger after test to get run states and duration stats |
+| `soak_test_report_dag.py` | Report DAG — trigger after test for execution summary |
 | `upload_sustained_test.sh` | Uploads all generated files to your MWAA S3 bucket |
 
 ## Generated Files (not checked in)
@@ -25,12 +25,8 @@ configs/
     factory_sustained_set_01_dag_000.yaml
     ...
     factory_sustained_set_01_dag_064.yaml
-  set_02/
-    ...
-dag_factory_sustained_set_01.py    # Per-set DAG loader (Airflow parses this)
-dag_factory_sustained_set_02.py
+dag_factory_sustained_set_01.py    # Per-set DAG loader
 trigger_dag_factory_sustained_set_01.py  # Master trigger DAG per set
-trigger_dag_factory_sustained_set_02.py
 ```
 
 ## How It Works
@@ -43,20 +39,15 @@ Concurrent task count across all sets:
 concurrent tasks = (peak_tasks // 65) × 65 × num_sets
 ```
 
-### Wave Pattern (40 minutes per set)
+### Wave Pattern
 
-| Wave | Delay | Task Duration | Description |
-|------|-------|---------------|-------------|
-| 1 | 0 min | 25 min | Baseline ramp |
-| 2 | 2 min | 28 min | 50% ramp |
-| 3 | 4 min | 31 min | 75% ramp |
-| 4-7 | 5-20 min | 35 min | Sustained peak |
+The test has 3 phases: ramp-up (5 min fixed), sustained peak (`--peak-duration`), and ramp-down (remainder of `--total-duration`). Wave task durations scale automatically based on total duration.
 
 ```
-Time     Load
-0-5m     Ramp up (500 → peak)
-5-25m    Sustained peak
-25-40m   Ramp down (peak → 0)
+Time              Load
+0 to 5m           Ramp up (500 → peak)
+5m to 5+peak      Sustained peak
+5+peak to total   Ramp down (peak → 0)
 ```
 
 ## Quick Start
@@ -66,14 +57,17 @@ Time     Load
 ```bash
 cd performance-test/execution-soak-test
 
-# Single set (65 DAGs, 2000 peak tasks)
+# 30-min test, 3600 peak tasks, 20-min peak (used for perf-test cluster validation)
+python generate_dag_factory_sustained.py --sets 1 --peak-tasks 3600 --peak-duration 20 --total-duration 30
+
+# Default: 40-min test, 2000 peak tasks, 20-min peak
 python generate_dag_factory_sustained.py
 
 # 2 sets for ~3900 concurrent tasks
 python generate_dag_factory_sustained.py --sets 2
 
-# 2 sets with 4000+ concurrent (32 tasks/DAG × 65 DAGs × 2 sets = 4160)
-python generate_dag_factory_sustained.py --sets 2 --peak-tasks 2080
+# 60-min test with 30-min peak
+python generate_dag_factory_sustained.py --total-duration 60 --peak-duration 30
 
 # Custom task sleep cycle (60s instead of 120s)
 python generate_dag_factory_sustained.py --sets 2 --task-duration 60
@@ -83,24 +77,27 @@ python generate_dag_factory_sustained.py --sets 2 --task-duration 60
 
 ```bash
 ./upload_sustained_test.sh <your-mwaa-bucket> [region]
+
+# Example
+./upload_sustained_test.sh perf-test-834811675783 us-east-2
 ```
 
 ### 3. Run the test
 
 1. Wait 2-5 minutes for MWAA to parse the DAGs
-2. In the Airflow UI, find the master trigger DAGs (tag: `master-trigger`)
-3. Trigger all sets simultaneously for maximum parallel load
-4. Monitor CloudWatch for ~40 minutes
+2. In the Airflow UI, find the master trigger DAG (tag: `master-trigger`)
+3. Trigger it to start all 65 DAGs
+4. Monitor CloudWatch dashboard
 
-### 4. Generate report
+### 4. Report
 
-After the test completes, trigger the `soak_test_report` DAG in the Airflow UI. Pass the number of sets in the config:
+After the test completes, trigger `soak_test_report` with config:
 
 ```json
-{"sets": 2}
+{"num_dags": 80}
 ```
 
-The report logs DAG run states, failed task details, and duration stats. Check the task log for the output.
+Check the task log for DAG run states, failed tasks, and duration stats.
 
 ## CLI Reference
 
@@ -108,18 +105,19 @@ The report logs DAG run states, failed task details, and duration stats. Check t
 python generate_dag_factory_sustained.py [OPTIONS]
 
 Options:
-  --peak-tasks INT      Peak concurrent tasks per set (default: 2000)
-  --peak-duration INT   Minutes to sustain peak load (default: 20)
-  --sets INT            Number of sets of 65 DAGs (default: 1)
-  --task-duration INT   Sleep cycle per task in seconds (default: 120)
+  --peak-tasks INT       Peak concurrent tasks per set (default: 2000)
+  --peak-duration INT    Minutes to sustain peak load (default: 20)
+  --total-duration INT   Total test duration in minutes (default: 40)
+  --sets INT             Number of sets of 65 DAGs (default: 1)
+  --task-duration INT    Sleep cycle per task in seconds (default: 120)
 ```
 
 ## Scaling Examples
 
-| Sets | Peak Tasks/Set | Tasks/DAG | Concurrent Tasks |
-|------|----------------|-----------|------------------|
-| 1    | 2000           | 30        | ~1950            |
-| 2    | 2000           | 30        | ~3900            |
-| 2    | 2080           | 32        | ~4160            |
-| 3    | 4000           | 61        | ~11895           |
-| 5    | 2000           | 30        | ~9750            |
+| Sets | Peak Tasks/Set | Tasks/DAG | Concurrent Tasks | Total Duration |
+|------|----------------|-----------|------------------|----------------|
+| 1    | 3600           | 55        | ~3575            | 30 min         |
+| 1    | 2000           | 30        | ~1950            | 40 min         |
+| 2    | 2000           | 30        | ~3900            | 40 min         |
+| 2    | 2080           | 32        | ~4160            | 40 min         |
+| 1    | 2000           | 30        | ~1950            | 60 min         |

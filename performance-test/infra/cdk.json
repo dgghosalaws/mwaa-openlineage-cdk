@@ -1,0 +1,10 @@
+{
+  "app": "python3 app.py",
+  "context": {
+    "env_name": "perf-test",
+    "region": "us-east-2",
+    "environment_class": "mw1.2xlarge",
+    "min_workers": 20,
+    "max_workers": 50
+  }
+}
