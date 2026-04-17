@@ -14,7 +14,7 @@ Generates and runs sustained load tests on MWAA using [dag-factory](https://astr
 |------|-------------|
 | `generate_dag_factory_sustained.py` | Generator — produces per-DAG YAML configs, per-set loaders, and trigger DAGs |
 | `performance_test_tasks_real.py` | Task implementations (`wave_delay_task`, `real_load_task`) |
-| `soak_test_report_dag.py` | Report DAG — trigger after test for execution summary |
+| `soak_test_report_dag.py` | Report DAG — uses MWAA InvokeRestApi for execution summary |
 | `upload_sustained_test.sh` | Uploads all generated files to your MWAA S3 bucket |
 
 ## Generated Files (not checked in)
@@ -94,13 +94,15 @@ python generate_dag_factory_sustained.py --sets 2 --task-duration 60
 
 ### 4. Report
 
-After the test completes, trigger `soak_test_report` with config:
+After the test completes, trigger `soak_test_report` in the Airflow UI with config:
 
 ```json
-{"num_dags": 80}
+{"num_dags": 65, "sets": 1, "env_name": "perf-test"}
 ```
 
-Check the task log for DAG run states, failed tasks, and duration stats.
+The report uses MWAA `InvokeRestApi` (boto3) to query DAG run and task instance states. Check the task log for output including DAG run states, failed task details, and duration stats.
+
+Note: The MWAA execution role needs `airflow:InvokeRestApi` permission with `Admin` or `Op` Airflow role. See `performance-test/infra/mwaa_perf_stack.py` for the IAM policy.
 
 ## CLI Reference
 

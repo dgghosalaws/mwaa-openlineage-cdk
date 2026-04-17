@@ -69,6 +69,14 @@ class MwaaPerfStack(Stack):
         ))
 
         role.add_to_policy(iam.PolicyStatement(
+            actions=["airflow:InvokeRestApi"],
+            resources=[
+                f"arn:aws:airflow:{self.region}:{self.account}:role/{env_name}/Admin",
+                f"arn:aws:airflow:{self.region}:{self.account}:role/{env_name}/Op",
+            ],
+        ))
+
+        role.add_to_policy(iam.PolicyStatement(
             actions=[
                 "logs:CreateLogStream", "logs:CreateLogGroup",
                 "logs:PutLogEvents", "logs:GetLogEvents",
